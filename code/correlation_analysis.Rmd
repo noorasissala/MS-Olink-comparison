@@ -1,0 +1,3200 @@
+---
+title: "MS-Olink correlation analysis"
+author: "Noora Sissala"
+date: "2025-03-21"
+output: html_document
+---
+
+## Read data
+
+```{r setup, include=FALSE}
+
+knitr::opts_chunk$set(echo = FALSE, message = FALSE, warning = FALSE, cache = TRUE)
+
+```
+
+```{r}
+
+# Load functions
+source('code/utility_functions.R')
+source('code/correlation_analysis_functions.R')
+source('code/plotting_functions.R')
+
+# Load packages
+library(tidyverse)
+library(ggplot2)
+library(patchwork)
+library(ggpp)
+library(ggsignif)
+library(ggpubr)
+library(clusterProfiler)
+library(org.Hs.eg.db)
+library(RColorBrewer)
+library(ggpointdensity)
+library(ggExtra)
+library(ggrepel)
+library(rstatix)
+library(msigdbr)
+library(ReactomePA)
+library(biomaRt)
+
+# Create result directory
+path <- 'results/correlation_analysis'
+
+if (!dir.exists(path)) {
+  dir.create(path, recursive = TRUE)
+}
+
+# Load MS data (with replicates)
+ms_data_all <- read_MS_data(withReplicateSamples = TRUE)
+
+# Load MS data (without replicates)
+ms_data <- read_MS_data()
+
+
+# Load Olink Explore data (without control samples)
+olink_data <- read_OlinkExplore_data(withControlSamples = FALSE, 
+                                     withBelowLOD = TRUE, 
+                                     withQCWarning = TRUE, 
+                                     withReplicateAssays = FALSE,
+                                     removeAllLOD = TRUE)
+
+# Olink Explore data in wide format
+olink_data_wide <- olink_long_to_wide(olink_data, id_cols = 'UniProt')
+
+# Reorder columns so they match between data frames
+ms_data <- ms_data[colnames(ms_data) %in% colnames(olink_data_wide)]
+olink_data_wide <- olink_data_wide[colnames(ms_data)]
+
+# Cleaned up Olink data (QC warnings and <LOD removed.= set to NA)
+olink_data_clean <- read_OlinkExplore_data(withBelowLOD = FALSE, # set <LOD to NA
+                                           withQCWarning = FALSE, # set QC warnings to NA
+                                           withControlSamples = FALSE, 
+                                           withReplicateAssays = FALSE,
+                                           removeAllLOD = TRUE)
+  
+olink_data_clean_wide <- olink_long_to_wide(
+  olink_data_clean, 
+  id_cols = 'UniProt') %>% 
+  filter(!rowSums(is.na(.)) == 88)
+
+# Reorder columns so they match between data frames
+olink_data_clean_wide <- olink_data_clean_wide[colnames(ms_data)]
+
+# Load metadata
+metadata_all <- read_metadata(withReplicates = TRUE, samples = 'MS')
+metadata <- read_metadata(withReplicates = FALSE, samples = 'overlapping')
+
+# Load protein metadata
+protein_metadata <- read.delim('data/metadata/protein_metadata.csv', sep = ',') |> 
+  filter(UniProt %in% ms_data$UniProt | OlinkID %in% olink_data$OlinkID)
+
+# Data for overlapping proteins
+overlap_data <- ms_data %>%
+  pivot_longer(cols = -UniProt,
+               names_to = 'Sample.ID',
+               values_to = 'MS') %>%
+  inner_join(olink_data, by = c('Sample.ID', 'UniProt')) %>%
+  mutate(Below.LOD = NPX < LOD,
+         NPX.noLOD = ifelse(Below.LOD, NA, NPX), # NPX with values <LOD removed
+         NPX.clean = ifelse(
+           Below.LOD | QC_Warning == 'WARN' |  # QC warnings and <LOD removed
+             Assay_Warning == 'WARN', NA, NPX)) %>%
+  full_join(metadata, by = 'Sample.ID') %>%
+  left_join(protein_metadata, 
+            by = join_by(UniProt, Panel, OlinkID, Assay)) %>%
+  dplyr::select(Sample.ID, UniProt, Gene.Name, Description, Assay, OlinkID, 
+                Panel, MS, NPX, NPX.noLOD, NPX.clean, QC_Warning, Assay_Warning, 
+                LOD, Below.LOD, everything()) |> 
+  group_by(Sample.ID) %>%
+  mutate(Warning = ifelse(any(QC_Warning == 'WARN'), 'Warn', 'Pass')) |> 
+  ungroup()
+
+# Vectors with protein IDs
+ms_proteins <- ms_data$UniProt
+olink_proteins <- olink_data_wide$UniProt
+all_proteins <- union(ms_proteins, olink_proteins)
+
+```
+
+
+## Correlation per protein
+
+Calculated Spearman and Pearson correlations between MS and Olink Explore data for each protein. Required a minimum of 8 data points to include a protein in the correlation analysis.
+
+
+### Correlation per protein - all data
+
+All overlapping proteins (N = 1129).
+
+```{r, warning=FALSE}
+
+cor_per_protein <- bind_rows(
+  'Spearman' = cor.test.df(ms_data, olink_data_wide, 
+                           match_by = 'UniProt', cor_type = 'rowwise',
+                           cor_method = 'spearman'), 
+  'Pearson' = cor.test.df(ms_data, olink_data_wide, 
+                          match_by = 'UniProt', cor_type = 'rowwise',
+                          cor_method = 'pearson'), 
+  .id = 'Cor.method') %>% 
+  left_join(protein_metadata, by = 'UniProt') |> 
+  dplyr::select(UniProt, Gene.Name, Description, OlinkID, Assay, Panel,
+                everything())
+
+
+```
+
+```{r}
+
+total_N <- cor_per_protein |> 
+  group_by(Cor.method) |> 
+  tally(name = 'Total')
+
+total_N
+
+```
+
+
+```{r}
+
+ggplot.histogram(cor_per_protein, Correlation, 
+                 title = 'MS - Olink Explore correlation per protein', 
+                 Fill_var = Cor.method, bin_prop = 0.1, alpha = 0.6, 
+                 position = 'identity') +
+  theme_publ()
+
+```
+
+```{r, include=FALSE}
+
+ggsave(filename = 'MS-Olink_cor_allData_Pearson_vs_Spearman.pdf', 
+       path = path,
+       width = 8.7, 
+       height = 8,
+       units = 'cm')
+
+```
+
+
+```{r}
+
+cor_per_protein <- cor_per_protein |> 
+  pivot_wider(names_from = Cor.method, 
+              names_sep = '_',
+              values_from = contains(c('Correlation', 'P.value', 'Adj.p.value'))) |> 
+  mutate(Cor.interval_Spearman = cor_intervals(Correlation_Spearman),
+         Cor.interval_Pearson = cor_intervals(Correlation_Pearson))
+  
+
+```
+
+
+Histogram of Spearman correlations:
+
+```{r}
+
+protein_cor_hist <- cor_per_protein |> 
+  dplyr::rename(Correlation = Correlation_Spearman,
+                Cor.interval = Cor.interval_Spearman) |>
+  cor_hist(table_y = 200, median_y = 0.58)
+
+protein_cor_hist
+
+```
+
+```{r, include=FALSE}
+
+ggsave(protein_cor_hist,
+       filename = 'MS-Olink_Spearman_cor_hist_allData.pdf', 
+       path = path,
+       width = 8.7, 
+       height = 7.5,
+       units = 'cm')
+
+```
+
+
+### Correlation per protein - clean data
+
+Values <LOD and QC warnings were set to NA. Proteins with fewer than 8 overlapping measurements were removed. N = 1064.
+
+```{r, message=FALSE}
+
+cor_per_protein_clean <- bind_rows(
+  'Spearman' = cor.test.df(ms_data, olink_data_clean_wide, 
+                           match_by = 'UniProt', cor_type = 'rowwise',
+                           cor_method = 'spearman'), 
+  'Pearson' = cor.test.df(ms_data, olink_data_clean_wide, 
+                          match_by = 'UniProt', cor_type = 'rowwise',
+                          cor_method = 'pearson'), 
+  .id = 'Cor.method') %>% 
+  left_join(protein_metadata, by ='UniProt') |> 
+  dplyr::select(UniProt, Gene.Name, Description, OlinkID, Assay, Panel,
+                everything()) |> 
+  filter(N >= 8) # remove proteins with <8 overlapping measurements
+
+
+```
+
+```{r}
+
+total_N_cleanData <- cor_per_protein_clean |> 
+  group_by(Cor.method) |> 
+  tally(name = 'Total')
+
+total_N_cleanData
+
+```
+
+
+```{r}
+
+ggplot.histogram(cor_per_protein_clean, 
+                 X_var = Correlation, 
+                 title = 'MS - Olink Explore correlation per protein', 
+                 Fill_var = Cor.method, alpha = 0.6, bin_prop = 0.1,
+                 position = 'identity') +
+  theme_publ()
+
+```
+
+```{r, include=FALSE}
+
+ggsave(filename = 'MS-Olink_cor_cleanData_Pearson_vs_Spearman.pdf', 
+       path = path,
+       width = 8.7, 
+       height = 8,
+       units = 'cm')
+
+```
+
+Merge results:
+
+```{r}
+
+# Wide format
+cor_per_protein_clean <- cor_per_protein_clean |> 
+  pivot_wider(names_from = Cor.method, 
+              names_sep = '_',
+              values_from = contains(c('Correlation', 'P.value', 'Adj.p.value'))) |> 
+  mutate(Cor.interval_Spearman = cor_intervals(Correlation_Spearman),
+         Cor.interval_Pearson = cor_intervals(Correlation_Pearson))
+
+# Merge with the other correlation table
+cor_per_protein <- cor_per_protein |> 
+  left_join(
+    cor_per_protein_clean, 
+    by = c('UniProt', 'Gene.Name', 'Description', 'OlinkID', 'Assay', 'Panel'), 
+    suffix = c('', '.cleanData'))
+
+```
+
+
+Histogram of Spearman correlations:
+
+```{r}
+
+protein_cor_hist_clean <- cor_per_protein |> 
+  dplyr::rename(Correlation = Correlation_Spearman.cleanData,
+                Cor.interval = Cor.interval_Spearman.cleanData) |>
+  cor_hist(table_y = 200, median_y = 0.58)
+
+protein_cor_hist_clean
+
+```
+
+```{r, include=FALSE}
+
+ggsave(protein_cor_hist_clean,
+       filename = 'MS-Olink_Spearman_cor_hist_cleanData.pdf', 
+       path = path,
+       width = 8.7, 
+       height = 7.5,
+       units = 'cm')
+
+```
+
+
+### Correlation per protein - max 50% NAs
+
+791 overlapping proteins after filtering for max 50% missing values. 50% was calculated on the 88 overlapping samples for MS (not all 120), and QC warnings in Olink data were set to missing.
+
+```{r}
+
+ms_data_max50NA <- na_omit_prop(ms_data, 0.5, ignore_cols = 'UniProt')
+olink_data_wide_max50NA <- na_omit_prop(olink_data_clean_wide, 0.5, ignore_cols = 'UniProt')
+
+```
+
+```{r, message=FALSE}
+
+cor_per_protein <- cor_per_protein |> 
+  mutate(Max50perc.missing.or.QCwarn = UniProt %in% ms_data_max50NA$UniProt & UniProt %in% olink_data_wide_max50NA$UniProt)
+
+cor_per_protein_max50NA <- cor_per_protein |> 
+  filter(Max50perc.missing.or.QCwarn)
+
+```
+
+Histogram of Spearman correlations:
+
+```{r}
+
+protein_cor_hist_max50NA <- cor_per_protein |> 
+  filter(Max50perc.missing.or.QCwarn) |>
+  dplyr::rename(Correlation = Correlation_Spearman.cleanData,
+                Cor.interval = Cor.interval_Spearman.cleanData) |>
+  cor_hist(table_y = 160, median_y = 0.58)
+
+protein_cor_hist_max50NA
+
+```
+
+```{r}
+
+ggsave(protein_cor_hist_max50NA,
+       filename = 'MS-Olink_Spearman_cor_hist_max50percNA.pdf', 
+       path = path,
+       width = 8.7, 
+       height = 7.5,
+       units = 'cm')
+
+
+```
+
+
+### Correlation per protein - no NAs
+
+463 overlapping proteins after filtering for no missing values. QC warnings were set to missing in the Olink data.
+
+```{r}
+
+ms_data_noNA <- na.omit(ms_data)
+olink_data_wide_noNA <- na.omit(olink_data_clean_wide)
+
+```
+
+
+```{r, message=FALSE}
+
+cor_per_protein <- cor_per_protein |> 
+  mutate(No.missing.or.QCwarn = UniProt %in% ms_data_noNA$UniProt & UniProt %in% olink_data_wide_noNA$UniProt)
+
+cor_per_protein_noNA <- cor_per_protein |>
+  filter(No.missing.or.QCwarn)
+
+```
+
+Histogram of Spearman correlations:
+
+```{r}
+
+protein_cor_hist_noNA <- cor_per_protein |> 
+  filter(No.missing.or.QCwarn) |>
+  dplyr::rename(Correlation = Correlation_Spearman.cleanData,
+                Cor.interval = Cor.interval_Spearman.cleanData) |> 
+  cor_hist(table_y = 120, median_y = 0.58)
+
+protein_cor_hist_noNA
+
+```
+
+```{r}
+
+ggsave(protein_cor_hist_noNA,
+       filename = 'MS-Olink_Spearman_cor_hist_noNA.pdf', 
+       path = path,
+       width = 8.7, 
+       height = 7.5,
+       units = 'cm')
+
+
+```
+
+
+### Combine plots
+
+
+```{r, fig.height=4, fig.width=8}
+
+# change position of median text
+p1 <- protein_cor_hist_clean
+p1$layers[[3]]$data$y <- 0.55
+p1 <- p1 + labs(title = 'Clean data', x = 'MS—Olink correlation')
+
+p2 <- protein_cor_hist_max50NA
+p2$layers[[3]]$data$y <- 0.55
+p2 <- p2 + labs(title = 'Max 50% missing values', x = 'MS—Olink correlation')
+
+wrap_plots(A = guide_area(), B = p1, C = p2) +
+  plot_layout(design = 'AA\nBC',
+              heights = c(0.1,1),
+              guides = 'collect') &
+  guides(fill = guide_legend(nrow = 1))
+
+```
+
+
+```{r}
+
+ggsave(filename = 'MS-Olink_Spearman_cor_plots.pdf',
+       path = path,
+       width = 18.3,
+       height = 7.5,
+       units = 'cm')
+
+
+```
+
+
+### GSEA of protein correlations
+
+
+Investigated enrichment of specific types of proteins among low/high MS-Olink correlations by GSEA based on GO, MSigDB, KEGG, Reactome, and HPA gene sets, as well as Interpro protein domains. 
+
+
+#### GO GSEA
+
+```{r}
+
+set.seed(1234)
+
+gene_list <- cor_per_protein %>%
+  pull(Correlation_Spearman, name = UniProt) %>%
+  sort(decreasing = TRUE)
+
+cor_gsea_BP_res <- gseGO(gene_list, ont = 'BP', 
+                         OrgDb = org.Hs.eg.db, 
+                         keyType = 'UNIPROT')
+nrow(cor_gsea_BP_res@result)
+
+cor_gsea_MF_res <- gseGO(gene_list, ont = 'MF', 
+                         OrgDb = org.Hs.eg.db, 
+                         keyType = 'UNIPROT')
+nrow(cor_gsea_MF_res@result)
+
+cor_gsea_CC_res <- gseGO(gene_list, ont = 'CC', 
+                         OrgDb = org.Hs.eg.db, 
+                         keyType = 'UNIPROT')
+nrow(cor_gsea_CC_res@result)
+
+```
+
+No enrichment at 5% FDR.
+
+#### MSigDB GSEA
+
+```{r}
+
+# Get Entrez gene IDs for the target proteins
+entrez_ids <- bitr(all_proteins,
+                   fromType = 'UNIPROT', 
+                   toType = 'ENTREZID', 
+                   OrgDb = org.Hs.eg.db)
+entrez_ids <- distinct(entrez_ids, UNIPROT, .keep_all = TRUE)
+
+gene_list_entrez <- cor_per_protein %>%
+  left_join(entrez_ids, by = join_by('UniProt' == 'UNIPROT')) %>% 
+  filter(!is.na(ENTREZID)) %>%
+  pull(Correlation_Spearman, name = ENTREZID) %>%
+  sort(decreasing = TRUE)
+
+# Get MSigDB gene sets
+msigs <- msigdbr(species = "Homo sapiens")
+t2g <- msigs %>% dplyr::select(gs_name, ncbi_gene, gs_collection)
+
+set.seed(1234)
+
+msigdb_H_GSEA <- GSEA(geneList = gene_list_entrez,
+                      TERM2GENE = filter(t2g, gs_collection == 'H'))
+nrow(msigdb_H_GSEA)
+
+msigdb_C2_GSEA <- GSEA(geneList = gene_list_entrez,
+                      TERM2GENE = filter(t2g, gs_collection == 'C2'))
+nrow(msigdb_C2_GSEA)
+
+msigdb_C8_GSEA <- GSEA(geneList = gene_list_entrez,
+                      TERM2GENE = filter(t2g, gs_collection == 'C8'))
+nrow(msigdb_C8_GSEA)
+
+```
+
+No enriched MSigDB H, C2, or C8 pathways at 5% FDR.
+
+#### KEGG GSEA
+
+```{r}
+
+set.seed(1234)
+
+kegg_GSEA <- gseKEGG(gene_list,
+                     keyType = 'uniprot')
+nrow(kegg_GSEA)
+
+```
+
+No enriched KEGG pathways at 5% FDR.
+
+#### Reactome GSEA
+
+```{r}
+
+set.seed(1234)
+
+reactome_GSEA <- gsePathway(gene_list_entrez)
+nrow(reactome_GSEA)
+
+```
+
+No enriched Reactome pathways at 5% FDR.
+
+#### HPA GSEA
+
+```{r}
+
+hpa_data <- read.delim('data/processed_data/HPA_v24_clean.txt') |> 
+  # Add missing UniProt IDs
+    mutate(Uniprot = replace(Uniprot, Gene == 'TGFB1', 'P01137'),
+         Uniprot = replace(Uniprot, Gene == 'ITIH5', 'Q86UX2'),
+         Uniprot = replace(Uniprot, Gene == 'C1QB', 'P02746'),
+         Uniprot = replace(Uniprot, Gene == 'MST1', 'P26927'),
+         Uniprot = replace(Uniprot, Gene == 'ABO', 'P16442'),
+         Uniprot = replace(Uniprot, Gene == 'KIR2DS4', 'P43632'))
+  
+hpa_term_df <- hpa_data |> 
+  dplyr::select(
+    Gene, Gene.synonym, Ensembl, Gene.description, Uniprot,
+    Protein.class, Subcellular.location, 
+    Secretome.location, Secretome.function, Tissue) |> 
+  separate_wider_mixed(
+    col_name = Protein.class, sep = ', ', include_name = T) |> 
+  separate_wider_mixed(
+    col_name = Subcellular.location, sep = ', ', include_name = T) |> 
+  separate_wider_mixed(
+    col_name = Secretome.location, sep = ', ', include_name = T) |> 
+  separate_wider_mixed(
+    col_name = Secretome.function, sep = ', ', include_name = T) |> 
+  separate_wider_mixed(
+    col_name = Tissue, sep = ', ', include_name = T)
+
+duplicate_columns <- duplicated(str_remove(colnames(hpa_term_df), '\\.\\.\\..\\d+'))
+hpa_term_df <- hpa_term_df[-which(duplicate_columns)]
+colnames(hpa_term_df) <- str_remove(colnames(hpa_term_df), '\\.\\.\\..\\d+')
+
+# create TERM2GENE table
+hpa_t2g <- hpa_term_df |> 
+  dplyr::select(-`.NA`) |> 
+  pivot_longer(cols = -c(1:5),
+               names_to = 'variable',
+               values_to = 'term') |> 
+  dplyr::rename(gene = Uniprot) |> 
+  filter(!is.na(term), !is.na(gene)) |> 
+  dplyr::select(term, gene) |> 
+  distinct()
+
+```
+
+
+```{r, fig.height=4, fig.width=3.5, message=FALSE}
+
+set.seed(100)
+
+HPA_GSEA <- GSEA(geneList = gene_list,
+                 TERM2GENE = hpa_t2g)
+
+nrow(HPA_GSEA)
+HPA_GSEA@result
+
+ridgeplot(HPA_GSEA) +
+  theme_publ() +
+  theme(axis.text.y = element_text(lineheight = 0.7),
+        legend.position = 'right') +
+  guides(fill = guide_colorbar(title = 'FDR')) +
+  labs(x = 'MS-Olink correlation', y = 'HPA annotation') +
+  scale_y_discrete(expand = expansion(c(0.05, 0.3)),
+                   labels = function(x) str_wrap(x, width = 30))
+
+```
+
+```{r}
+
+ggsave(filename = 'MS-Olink_cor_GSEA_HPA_ridgeplot.pdf',
+       path = path,
+       width = 8.7,
+       height = 6,
+       units = 'cm')
+
+```
+
+
+Concentration of the proteins in these gene sets:
+
+```{r}
+
+enr_proteins <- unique(unlist(str_split(HPA_GSEA@result$core_enrichment, '/')))
+enr_proteins <- data.frame(UniProt = enr_proteins,
+                           Blood.conc.ngmL = hpa_data$Blood.conc.ngmL[match(enr_proteins, hpa_data$Uniprot)])
+
+plot_data <- cor_per_protein |> 
+  filter(!UniProt %in% enr_proteins$UniProt) |> 
+  left_join(hpa_data[c('Uniprot', 'Blood.conc.ngmL')], join_by(UniProt == Uniprot))
+plot_data <- bind_rows('Other' = plot_data, 'Enriched' = enr_proteins, .id = 'Enr')
+
+ggplot.jitterbox(plot_data, Enr, Blood.conc.ngmL) +
+  scale_y_log10(labels = log10_format(), breaks = 10^seq(-2,6,2)) +
+  small_logticks('l') +
+  stat_compare_means(size = 6/.pt, label.y = 5.8) +
+  labs(x = 'Protein group', y = 'Concentration in blood (ng/mL)') +
+  theme(legend.position = 'none')
+
+```
+
+```{r}
+
+ggsave(filename = 'MS-Olink_cor_GSEA_HPA_conc.pdf',
+       path = path,
+       width = 8.7,
+       height = 6,
+       units = 'cm')
+
+```
+
+The enrichment of these proteins among high cross-platform correlations could be due to their higher concentration in blood.
+
+
+```{r}
+
+HPA_GSEA_df <- HPA_GSEA@result |>
+  rowwise() |> 
+  # Add gene names
+  mutate(Gene.Name = paste(protein_metadata$Gene.Name[match(unlist(str_split(core_enrichment, '/')), protein_metadata$UniProt)], 
+                           collapse = '/'),
+         .after = core_enrichment)
+
+```
+
+
+#### Interpro protein domains
+
+```{r}
+
+try({
+    ensembl <- useEnsembl(biomart = 'genes', dataset = 'hsapiens_gene_ensembl')
+  
+    interpro_ids <- getBM(attributes = c('uniprot_gn_id', 'uniprot_gn_symbol',
+                                         'interpro', 'interpro_short_description',
+                                         'interpro_description'),
+                          filters = 'uniprot_gn_id',
+                          values = cor_per_protein$UniProt,
+                          mart = ensembl)
+    
+    interpro_data <- interpro_ids |> 
+      filter(interpro_short_description != '')
+    
+    interpro_t2g <- interpro_data |> 
+      dplyr::select(interpro_short_description, uniprot_gn_id) |> 
+      dplyr::rename(term = interpro_short_description, gene = uniprot_gn_id) |> 
+      filter(gene %in% cor_per_protein$UniProt) |> 
+      distinct()
+    
+    set.seed(1)
+
+    interpro_GSEA <- GSEA(geneList = gene_list,
+                          TERM2GENE = interpro_t2g)
+    
+    nrow(interpro_GSEA)
+    
+    }
+)
+  
+
+
+ 
+```
+
+No enrichment of proteins domains at 5% FDR.
+
+
+Save GSEA results:
+
+```{r}
+
+write.csv(HPA_GSEA_df, paste0(path, '/MS-Olink_cor_GSEA_res.csv'))
+
+```
+
+
+### ORA between protein correlation groups
+
+
+Investigated enrichment of specific types of proteins among low/high MS-Olink correlations by ORA based on GO, MSigDB, KEGG, Reactome, and HPA gene sets, as well as Interpro protein domains. 
+
+Performed ORA for proteins with low correlation (Spearman < 0.3, the No correlation group) and high correlation (Spearman > 0.7, the Strong correlation group).
+
+```{r}
+
+low_cor <- cor_per_protein |> 
+  filter(Cor.interval_Spearman == 'No correlation') |> 
+  pull(UniProt)
+
+length(low_cor)
+
+high_cor <- cor_per_protein |> 
+  filter(Cor.interval_Spearman == 'Strong correlation') |> 
+  pull(UniProt)
+
+length(high_cor)
+
+ORA_list <- list('Low' = low_cor, 'High' = high_cor)
+ORA_bg <- cor_per_protein$UniProt
+
+# List of entrez IDs
+low_cor_entrez <- entrez_ids$ENTREZID[match(low_cor, entrez_ids$UNIPROT)]
+high_cor_entrez <- entrez_ids$ENTREZID[match(high_cor, entrez_ids$UNIPROT)]
+ORA_list_entrez <- list('Low' = low_cor_entrez, 'High' = high_cor_entrez)
+ORA_bg_entrez <- entrez_ids$ENTREZID[match(ORA_bg, entrez_ids$UNIPROT)]
+
+```
+
+
+#### GO ORA
+
+
+```{r, fig.width=10, fig.height=2.5}
+
+ORA_protein_cor_BP <- compareCluster(
+  ORA_list,
+  fun = 'enrichGO',
+  universe = ORA_bg,
+  keyType = 'UNIPROT',
+  OrgDb = org.Hs.eg.db,
+  ont = 'BP')
+
+nrow(ORA_protein_cor_BP)
+
+ORA_protein_cor_MF <- compareCluster(
+  ORA_list,
+  fun = 'enrichGO',
+  universe = ORA_bg,
+  keyType = 'UNIPROT',
+  OrgDb = org.Hs.eg.db,
+  ont = 'MF')
+
+nrow(ORA_protein_cor_MF)
+
+ORA_protein_cor_CC <- compareCluster(
+  ORA_list,
+  fun = 'enrichGO',
+  universe = ORA_bg,
+  keyType = 'UNIPROT',
+  OrgDb = org.Hs.eg.db,
+  ont = 'CC')
+
+nrow(ORA_protein_cor_CC)
+
+go_ORA_p1 <- dotplot(ORA_protein_cor_BP) + labs(title = 'BP') 
+go_ORA_p2 <- dotplot(ORA_protein_cor_MF) + labs(title = 'MF') 
+go_ORA_p3 <- dotplot(ORA_protein_cor_CC) + labs(title = 'CC')
+
+go_ORA_p1 + go_ORA_p2 + go_ORA_p3 & theme_publ() & theme(legend.position = 'right')
+
+
+```
+
+
+```{r}
+
+# Combine results
+GO_ORA_df <- bind_rows(
+  ORA_protein_cor_BP@compareClusterResult, 
+  ORA_protein_cor_MF@compareClusterResult, 
+  ORA_protein_cor_CC@compareClusterResult) |> 
+  rowwise() |> 
+  # Add gene names
+  mutate(Gene.Name = paste(protein_metadata$Gene.Name[match(unlist(str_split(geneID, '/')), protein_metadata$UniProt)], collapse = '/'),
+         .after = geneID)
+
+```
+
+
+#### MSigDB ORA
+
+```{r}
+
+msigdb_H_ORA <- compareCluster(
+  ORA_list_entrez,
+  fun = 'enricher',
+  universe = ORA_bg_entrez,
+  TERM2GENE = filter(t2g, gs_collection == 'H'))
+
+nrow(msigdb_H_ORA)
+
+msigdb_C2_ORA <- compareCluster(
+  ORA_list_entrez,
+  fun = 'enricher',
+  universe = ORA_bg_entrez,
+  TERM2GENE = filter(t2g, gs_collection == 'C2'))
+
+nrow(msigdb_C2_ORA)
+
+msigdb_C8_ORA <- compareCluster(
+  ORA_list_entrez,
+  fun = 'enricher',
+  universe = ORA_bg_entrez,
+  TERM2GENE = filter(t2g, gs_collection == 'C8'))
+
+nrow(msigdb_C8_ORA)
+
+```
+
+No enrichment at 5% FDR.
+
+
+#### KEGG ORA
+
+```{r}
+
+
+KEGG_ORA <- compareCluster(
+  ORA_list,
+  fun = 'enrichKEGG',
+  universe = ORA_bg,
+  keyType = 'uniprot')
+
+nrow(KEGG_ORA)
+
+```
+
+No enriched KEGG pathways at 5% FDR.
+
+#### Reactome ORA
+
+```{r}
+
+reactome_ORA <- compareCluster(
+  ORA_list_entrez,
+  fun = 'enrichPathway',
+  universe = ORA_bg_entrez)
+
+nrow(reactome_ORA)
+
+```
+
+No enriched Reactome pathways at 5% FDR.
+
+#### HPA ORA
+
+```{r}
+
+HPA_ORA <- compareCluster(
+  ORA_list,
+  fun = 'enricher',
+  universe = ORA_bg,
+  TERM2GENE = hpa_t2g)
+
+nrow(HPA_ORA)
+
+```
+
+```{r}
+
+HPA_ORA |> 
+  mutate(Cluster = ifelse(Cluster == 'Low', 'Low correlation', 'High correlation'),
+         Cluster = factor(Cluster, levels = c('Low correlation', 'High correlation'))) |>
+  dotplot(by = 'Count') +
+  guides(fill = guide_colorbar(title = 'FDR', order = 1),
+         size  = guide_legend(order = 2)) +
+  theme_publ() +
+  theme(legend.position = 'right') +
+  labs(x = 'Correlation')
+
+```
+
+```{r}
+
+ggsave(filename = 'MS-Olink_cor_HPA_ORA.pdf',
+       path = path,
+       width = 8.7,
+       height = 6.5,
+       units = 'cm')
+
+```
+
+```{r}
+
+HPA_ORA_df <- HPA_ORA@compareClusterResult |>
+  rowwise() |> 
+  # Add gene names
+  mutate(Gene.Name = paste(protein_metadata$Gene.Name[match(unlist(str_split(geneID, '/')), protein_metadata$UniProt)], collapse = '/'),
+         .after = geneID)
+
+```
+
+
+#### Interpro protein domains
+
+```{r}
+
+try({
+  interpro_ORA <- compareCluster(
+  ORA_list,
+  fun = 'enricher',
+  universe = ORA_bg,
+  TERM2GENE = interpro_t2g)
+
+  nrow(interpro_ORA)
+})
+
+
+```
+
+No enrichment of protein domains at 5% FDR.
+
+
+Save ORA results:
+
+```{r}
+
+ORA_res_df <- bind_rows(
+  GO_ORA_df,
+  HPA_ORA_df
+)
+  
+write.csv(ORA_res_df, file.path(path, 'MS-Olink_cor_ORA_res.csv'), row.names = FALSE)
+
+```
+
+
+
+## Effect of data quality on correlations
+
+Calculate and add data quality variables to correlation data:
+
+```{r}
+
+protein_cor_data <- cor_per_protein |> 
+  # reorder columns
+  dplyr::select(
+    UniProt, Gene.Name, Description, OlinkID, Assay, Panel, N, N.cleanData,
+    contains('Correlation'), contains('P.value'), contains('Adj.p.value'),
+    contains('Spearman'), contains('Pearson'), everything()) |> 
+  dplyr::relocate(contains('cleanData'), .before = Max50perc.missing.or.QCwarn)
+
+# Number of missing values in MS data
+msNAs <- pivot_longer(ms_data, 
+                      cols = -UniProt,
+                      names_to = 'Sample.ID',
+                      values_to = 'Value') %>% 
+  group_by(UniProt) %>% 
+  summarize(N.Missing.MS = sum(is.na(Value)),
+            Perc.Missing.MS = sum(is.na(Value))/88*100)
+
+# Missing values in MS data
+protein_cor_data <- protein_cor_data %>% 
+  left_join(msNAs, by = 'UniProt')
+
+# Number of values below LOD in Olink data
+below_LOD <- olink_data %>% 
+  group_by(UniProt) %>% 
+  summarise(N.below.LOD = sum(NPX < LOD),
+            Perc.below.LOD = N.below.LOD/88*100)
+
+protein_cor_data <- protein_cor_data %>% 
+  left_join(below_LOD, by = 'UniProt')
+
+# Number of missing values/values <LOD in either MS or Olink (combined)
+missing_values <- overlap_data %>% 
+  group_by(UniProt) %>% 
+  summarize(N.Missing.values = sum(Below.LOD | is.na(MS)), # missing = missing in MS or <LOD in Olink
+            Perc.Missing.values = round(N.Missing.values/88*100, 2))
+
+protein_cor_data <- protein_cor_data %>% 
+  left_join(missing_values, by = 'UniProt')
+
+# Median distance from LOD in Olink data
+dist_from_LOD <- olink_data |> 
+  mutate(Below.LOD = NPX < LOD) |>
+  filter(!Below.LOD) |>
+  mutate(Distance.LOD = NPX - LOD) |>
+  group_by(UniProt) |> 
+  summarize(Median.Dist.LOD = median(Distance.LOD, na.rm = T))
+
+protein_cor_data <- protein_cor_data |> 
+  left_join(dist_from_LOD, by = 'UniProt')
+
+# Olink panel 
+protein_cor_data <- protein_cor_data %>% 
+  mutate(Panel.color = str_remove(Panel, ' II'), # for coloring by panel type
+         Panel = factor(
+           Panel, levels = c('Cardiometabolic', 'Cardiometabolic II', 
+                             'Inflammation', 'Inflammation II',
+                             'Neurology', 'Neurology II', 
+                             'Oncology', 'Oncology II')))
+
+# QC warnings in Olink data
+QCwarn_per_protein <- overlap_data %>% 
+  group_by(UniProt) %>% 
+  summarize(N.sample.QC.warning = sum(QC_Warning == 'WARN'))
+
+protein_cor_data <- protein_cor_data %>% 
+  left_join(QCwarn_per_protein, by = 'UniProt')
+
+# Assay QC warnings
+protein_cor_data <- protein_cor_data %>% 
+  left_join(distinct(olink_data, UniProt, Assay_Warning), by = 'UniProt') |> 
+  dplyr::rename('Assay.QC.warning' = Assay_Warning)
+
+# Concentration in blood (from HPA)
+protein_cor_data <- protein_cor_data %>%
+  left_join(hpa_data[c('Uniprot', 'Blood.conc.ngmL')],
+            by = join_by(UniProt == Uniprot)) %>% 
+  distinct()
+
+# MS protein coverage and number of proteins in protein group
+protein_metadata_MS <- read.csv('data/metadata/protein_metadata_MS.csv')[-1]
+
+protein_cor_data <- protein_cor_data %>% 
+  left_join(protein_metadata_MS[c('UniProt', 'Coverage', 'Protein.count')], 
+            by = 'UniProt')
+
+
+# Number of PSMs
+
+n_psms <- protein_metadata_MS |> 
+  rowwise() %>% 
+  mutate(min.PSMs = min(c_across(contains('Fully.quanted.PSM.count')), na.rm = T),
+         max.PSMs = max(c_across(contains('Fully.quanted.PSM.count')), na.rm = T),
+         median.PSMs = median(c_across(contains('Fully.quanted.PSM.count')), na.rm = T)) %>% 
+  ungroup() |> 
+  dplyr::select(UniProt, contains('Fully.quanted.PSM.count'), min.PSMs, max.PSMs, median.PSMs)
+
+protein_cor_data <- protein_cor_data %>% 
+  left_join(dplyr::select(n_psms, UniProt, min.PSMs, median.PSMs, max.PSMs), 
+            by = 'UniProt')
+
+# Number of peptides
+n_peptides <- protein_metadata_MS %>%  
+  dplyr::select(UniProt, contains('Unique.peptide')) %>% 
+  rowwise() %>% 
+  mutate(
+    min.Unique.peptides = min(c_across(
+      contains('Unique.peptide.count', ignore.case = FALSE)), na.rm = T),
+    max.Unique.peptides = max(c_across(
+      contains('Unique.peptide.count', ignore.case = FALSE)), na.rm = T),
+    median.Unique.peptides = median(c_across(
+      contains('Unique.peptide.count', ignore.case = FALSE)), na.rm = T)) %>% 
+  ungroup()
+
+
+protein_cor_data <- protein_cor_data %>% 
+  left_join(dplyr::select(n_peptides, UniProt, min.Unique.peptides, 
+                          median.Unique.peptides, max.Unique.peptides), 
+            by = 'UniProt')
+
+
+
+# PSM quality 
+psm_table <- read.delim('data/processed_data/target_psmtable.txt', 
+                        sep = '\t')
+
+psm_quality <- psm_table %>% 
+  filter(UniProt %in% ms_data$UniProt) %>%
+  group_by(UniProt) %>% 
+  summarize(Abs.precursor.error = mean(abs(PrecursorError.ppm), na.rm = T),
+            Precursor.error = mean(PrecursorError.ppm, na.rm = T),
+            MSGF.score = mean(MSGFScore, na.rm = T),
+            Spec.Evalue = mean(SpecEValue, na.rm = T),
+            Evalue = mean(EValue, na.rm = T),
+            SVM.score = mean(Percolator.svm.score, na.rm = T),
+            PSM.q.value = mean(PSM.q.value, na.rm = T),
+            peptide.q.value = mean(Peptide.q.value, na.rm = T),
+            PSM.PEP = mean(PSM.PEP, na.rm = T),
+            peptide.PEP = mean(Peptide.PEP, na.rm = T),
+            Abs.FWHM = mean(abs(FWHM), na.rm = T),
+            FWHM = mean(FWHM, na.rm = T),
+            Precursor.ion.fraction = mean(Precursor.ion.fraction, na.rm = T))
+
+protein_cor_data <- protein_cor_data %>% 
+  left_join(psm_quality, by = 'UniProt')
+
+
+# Data dispersion
+
+# Load function for CV calculation
+source('code/CV_analysis_functions.R')
+
+data_spread <- overlap_data %>% 
+  group_by(UniProt) %>% 
+  summarize(IQR.MS = IQR(MS, na.rm = T),
+            IQR.Olink = IQR(NPX, na.rm = T),
+            IQR.Olink.cleanData = IQR(NPX.clean, na.rm = T),
+            SD.MS = sd(MS, na.rm = T),
+            SD.Olink = sd(NPX, na.rm = T),
+            SD.Olink.cleanData = sd(NPX.clean, na.rm = T),
+            CV.MS = CV.log2(MS),
+            CV.Olink = CV.log2(NPX),
+            CV.Olink.cleanData = CV.log2(NPX.clean),
+            Range.MS = range(
+              MS, na.rm = T)[2] - range(MS, na.rm = T)[1],
+            Range.Olink = range(
+              NPX, na.rm = T)[2] - range(NPX, na.rm = T)[1],
+            Range.Olink.cleanData = range(
+              NPX.clean, na.rm = T)[2] - range(NPX.clean, na.rm = T)[1]) |>
+  mutate(Range.MS = ifelse(is.infinite(Range.MS), NA, Range.MS),
+         Range.Olink = ifelse(is.infinite(Range.Olink), NA, Range.Olink),
+         Range.Olink.cleanData = ifelse(is.infinite(Range.Olink.cleanData), NA, Range.Olink.cleanData))
+
+protein_cor_data <- protein_cor_data %>% 
+  left_join(data_spread, by = 'UniProt')
+
+# Technical variation (CVs)
+
+# Load Olink Explore data with control samples
+# Remove <LOD values for CV calculation as recommended by Olink
+olink_control_data <-  read_OlinkExplore_data(withControlSamples = TRUE, 
+                                              withBelowLOD = FALSE,
+                                              withQCWarning = TRUE, 
+                                              withReplicateAssays = FALSE,
+                                              removeAllLOD = TRUE)
+
+# Calculate technical CVs
+CVs <- calc_tech_CV(ms_data_all, olink_control_data) |> 
+  filter(!is.na(Technical.CV)) |> 
+  pivot_wider(id_cols = UniProt, 
+              names_from = Platform, 
+              values_from = Technical.CV) |> 
+  dplyr::rename(Technical.CV.MS = MS,
+                Technical.CV.Olink = Olink)
+                      
+protein_cor_data <- protein_cor_data %>% 
+  left_join(CVs, by = 'UniProt')
+
+# Protein mass, length, and isoforms from Uniprot
+# Load data from UniProt
+uniprot_data <- read_tsv('data/external_data/UniProt_ann_overlapping_proteins_2023_07_13.tsv', 
+                         name_repair = 'universal_quiet',
+                         show_col_types = FALSE) %>% 
+  rename_with(.fn = ~str_replace(.x, '\\.\\.', '\\.')) %>% 
+  rename_with(.fn = ~str_remove(.x, '\\.$')) %>% 
+  dplyr::rename(Isoforms = Alternative.products.isoforms,
+         UniProt = From) %>%
+  filter(Reviewed == 'reviewed', Organism == 'Homo sapiens (Human)') %>% 
+  rowwise() %>% 
+  # Extract number of isoforms and isoform-producing event (e.g. alternative splicing)
+  mutate(Isoform.event = str_match(Isoforms, 'Event=(.*?);')[,2],
+         Isoform.N = as.numeric(str_match(Isoforms, 'Named isoforms=(.*?);')[,2]),
+         .after = Isoforms) |> 
+  dplyr::select(UniProt, Length, Mass, Isoforms, Isoform.N, Isoform.event) |> 
+  dplyr::rename(UniProt.Isoforms = Isoforms)
+
+protein_cor_data <- protein_cor_data |> 
+  left_join(uniprot_data, by = 'UniProt')
+
+```
+
+```{r}
+
+write.csv(protein_cor_data, file.path(path, 'MS-Olink_protein_cor_table.csv'), row.names = F)
+
+```
+
+
+
+### Missing values (MS or Olink)
+
+
+Combined missing values: missing value in MS or <LOD value in Olink. 
+
+Proteins with high cross-platform correlation clearly have less missing values than proteins with low cross-platform correlation:
+
+```{r}
+
+protein_cor_data %>% 
+  mutate(Rank = min_rank(Correlation_Spearman)) %>% 
+  arrange(-Rank) %>%
+  ggplot(aes(x = Rank, y = Correlation_Spearman)) +
+  geom_point(aes(color = Perc.Missing.values), alpha = 0.6, size = 2) +
+  scale_color_gradientn(colors = rev(brewer.pal(9, 'Spectral'))) +
+  theme_publ() +
+  labs(color = 'Missing values (%)', y = 'MS-Olink correlation')
+  
+
+```
+
+```{r, include=FALSE}
+
+ggsave(filename = 'MS-Olink_cor_rank_color_by_missing.pdf',
+       path = path,
+       width = 8.7,
+       height = 7.5,
+       units = 'cm')
+
+```
+
+
+All data (retaining values below LOD):
+
+```{r, warning=FALSE}
+
+protein_cor_data %>% 
+ggplot.corrplot(X_var = Perc.Missing.values, Y_var = Correlation_Spearman) +
+  expand_limits(y = c(0, 1.3)) +
+  labs(title = 'MS-Olink correlation vs. missing values',
+       x = 'Proportion of missing values (%)', y = 'MS-Olink correlation') +
+  theme_publ()
+
+```
+
+```{r}
+
+ggsave(filename = 'MS-Olink_cor_vs_missing_allData.pdf',
+       path = path,
+       width = 8.7,
+       height = 6,
+       units = 'cm',
+       device = cairo_pdf)
+
+```
+
+
+Clean data (removing <LOD values and QC warnings):
+
+```{r, warning=FALSE}
+
+ggplot.corrplot(protein_cor_data, X_var = Perc.Missing.values, 
+                Y_var = Correlation_Spearman.cleanData) +
+  expand_limits(y = c(0, 1.3)) +
+  labs(title = 'MS-Olink correlation vs. missing values',
+       x = 'Proportion of missing values (%)', y = 'MS-Olink correlation') +
+  theme_publ()
+
+```
+
+```{r}
+
+ggsave(filename = 'MS-Olink_cor_vs_missing_cleanData.pdf',
+       path = path,
+       width = 8.7,
+       height = 6,
+       units = 'cm',
+       device = cairo_pdf)
+
+```
+
+
+#### Missing values vs. other factors
+
+
+Investigation of the relationship between missing values in MS/Olink and other data quality factors.
+
+
+##### Protein concentration
+
+
+Estimated concentration in blood from the HPA. 
+
+
+Missing values in MS:
+
+```{r, warning=FALSE}
+
+ggplot.corrplot(protein_cor_data, Perc.Missing.MS, Blood.conc.ngmL,
+                title = 'Protein concentration vs. missing values (MS)',
+                xlab = 'Proportion of missing values (%)',
+                ylab = 'Concentration in blood (ng/mL)') +
+  scale_y_log10(expand = expansion(c(0.05, 0.2)),
+                labels = log10_format()) +
+  small_logticks('l') +
+  theme_publ()
+
+```
+
+
+```{r}
+
+ggsave(filename = 'protein_conc_vs_missing_MS.pdf',
+       path = path,
+       width = 8.7,
+       height = 6,
+       units = 'cm',
+       device = cairo_pdf)
+
+```
+
+
+Missing values in Olink:
+
+```{r, warning=FALSE}
+
+ggplot.corrplot(protein_cor_data, Perc.below.LOD, Blood.conc.ngmL,
+                title = 'Protein concentration vs. missing values (Olink)',
+                xlab = 'Proportion of missing values (%)',
+                ylab = 'Concentration in blood (ng/mL)') +
+  scale_y_log10(expand = expansion(c(0.05, 0.2)),
+                labels = log10_format()) +
+  small_logticks('l') +
+  theme_publ()
+
+```
+
+```{r}
+
+ggsave(filename = 'protein_conc_vs_belowLOD.pdf',
+       path = path,
+       width = 8.7,
+       height = 6, 
+       units = 'cm',
+       device = cairo_pdf)
+
+```
+
+
+##### Technical CVs
+
+
+Missing values in MS:
+
+```{r}
+
+ggplot.corrplot(protein_cor_data, Perc.Missing.MS, Technical.CV.MS) +
+  labs(x = 'Proportion of missing values (%)', y = 'Technical CV (MS)',
+       title = 'Technical CV vs. missing values (MS)')
+
+```
+
+```{r}
+
+ggsave(filename = 'technical_CV_vs_missing_MS.pdf',
+       path = path,
+       width = 8.7,
+       height = 6,
+       units = 'cm',
+       device = cairo_pdf)
+
+```
+
+
+Missing values in Olink:
+
+```{r}
+
+ggplot.corrplot(protein_cor_data, Perc.below.LOD, Technical.CV.Olink,
+                xlab = 'Proportion of missing values (%)', 
+                ylab = 'Technical CV (Olink)',
+                title = 'Technical CV vs. missing values (Olink)') +
+  ylim(c(0,100))
+
+```
+
+```{r}
+
+ggsave(filename = 'technical_CV_vs_belowLOD.pdf',
+       path = path,
+       width = 8.7,
+       height = 6,
+       units = 'cm',
+       device = cairo_pdf)
+
+```
+
+
+##### Number of PSMs
+
+Number of peptide spectrum matches (PSMs) per protein in the MS data. 
+
+
+Median #PSMs across TMT sets:
+
+```{r}
+
+protein_cor_data %>% 
+  ggplot(aes(Perc.Missing.MS, median.PSMs)) +
+  geom_pointdensity(size = 0.5) +
+  scale_y_continuous(trans = 'log10') +
+  small_logticks('l') +
+  labs(x = 'Proportion of missing values (%)', 
+       y = 'Median #PSMs across TMT sets',
+       title = 'Number of PSMs vs. missing values',
+       color = 'Density') +
+  scale_color_gradientn(colors = rev(brewer.pal(11, 'Spectral'))) +
+  theme_publ() +
+  theme(legend.position = 'right')
+
+```
+
+```{r, include=FALSE}
+
+ggsave(filename = 'medianPSMs_vs_missing_MS.pdf',
+       path = path,
+       width = 8.7,
+       height = 6, 
+       units = 'cm')
+
+```
+
+
+
+##### Number of peptides
+
+
+Number of unique peptides per protein in the MS data.
+
+
+Median #peptides across TMT sets:
+
+```{r}
+
+protein_cor_data %>% 
+  ggplot(aes(Perc.Missing.MS, median.Unique.peptides)) +
+  geom_pointdensity(size = 0.5) +
+  scale_y_continuous(trans = 'log10') +
+  theme_publ() +
+  scale_color_gradientn(colors = rev(brewer.pal(11, 'Spectral'))) +
+  labs(x = 'Proportion of missing values (%)', y = 'Median #peptides across TMT sets',
+       title = 'Number of peptides vs. missing values',
+       color = 'Density') +
+  small_logticks('l') +
+  theme(legend.position = 'right')
+
+```
+
+
+```{r}
+
+ggsave(filename = 'medianPeptides_vs_missing_MS.pdf',
+       path = path,
+       width = 8.7,
+       height = 6, 
+       units = 'cm')
+
+
+```
+
+
+##### Distance from LOD
+
+
+Median distance from the LOD of NPX values of each protein in Olink data.
+
+```{r}
+
+protein_cor_data |>
+  ggplot(aes(Perc.below.LOD, Median.Dist.LOD)) +
+  geom_pointdensity(size = 0.5) +
+  labs(x = 'Proportion of missing values (%)', 
+       y = 'Median distance from LOD (NPX)',
+       title = 'Distance from LOD vs. missing values (Olink)',
+       color = 'Density') +
+  scale_color_gradientn(colors = rev(brewer.pal(11, 'Spectral'))) +
+  theme_publ() +
+  theme(legend.position = 'right')
+
+```
+
+```{r}
+
+ggsave(filename = 'distance_from_LOD_vs_belowLOD.pdf',
+       path = path,
+       width = 8.7,
+       height = 6,
+       units = 'cm')
+
+```
+
+
+##### Data spread
+
+Data spread was asssessed for each protein using inter-quartile range, standard deviation, and the range of quant values. 
+
+```{r}
+
+data_spread_vs_NA <- protein_cor_data |> 
+  dplyr::rename(Perc_Missing.MS = Perc.Missing.MS,
+                Perc_Missing.Olink = Perc.below.LOD) |>
+  pivot_longer(
+    cols = c('IQR.MS', 'SD.MS', 'Range.MS', 
+             'IQR.Olink', 'SD.Olink', 'Range.Olink'),
+    names_to = c('Metric', 'Platform'),
+    values_to = 'Value', 
+    names_sep = '\\.') |> 
+  dplyr::select(UniProt, Metric, Platform, Value, Perc_Missing.MS, Perc_Missing.Olink) |>
+  mutate(Perc.Missing = ifelse(Platform == 'MS', Perc_Missing.MS, Perc_Missing.Olink))
+  
+cor_coefs <- data_spread_vs_NA %>%
+  group_by(Platform, Metric) %>%
+  summarise(Pearson = cor.test(Perc.Missing, Value, method = 'pearson')$estimate,
+            P.value_Pearson = cor.test(Perc.Missing, Value, method = 'pearson')$p.value,
+            Spearman = cor.test(Perc.Missing, Value, method = 'spearman')$estimate,
+            P.value_Spearman = cor.test(Perc.Missing, Value, method = 'spearman')$p.value) |> 
+  mutate(across(c(Pearson, Spearman), round, 2),
+         across(c(P.value_Pearson, P.value_Spearman), round, 3),
+         P.label_Pearson = ifelse(P.value_Pearson < 0.001, '<0.001', paste('=', P.value_Pearson)),
+         P.label_Spearman = ifelse(P.value_Spearman < 0.001, '<0.001', paste('=', P.value_Spearman)),
+         Label_Pearson = str_glue("Pearson's R = {Pearson}, p {P.label_Pearson}"),
+         Label_Spearman = str_glue("Spearman's \u03C1 = {Spearman}, p {P.label_Spearman}"),
+         Label = paste(Label_Pearson, Label_Spearman, sep = '\n'),
+         npcx = 'left', npcy = 'top')
+
+data_spread_vs_NA |>
+  ggplot(aes(x = Perc.Missing, y = Value)) +
+  facet_grid(Metric ~ Platform, scales = 'free_y', axes = 'all') +
+  geom_point(size = 0.5, alpha = 0.6) +
+  geom_text_npc(data = cor_coefs, aes(label = Label, npcx = npcx, npcy = npcy),
+                hjust = 0, vjust = 1, size = 6/.pt) +
+  geom_smooth(method = 'lm', se = T, color = 'steelblue', lwd = 0.5, ) +
+  scale_y_continuous(expand = expansion(mult = c(0.05, 0.3))) +
+  labs(x = 'Proportion of missing values (%)', y = 'Data spread',
+       title = 'Data spread versus missing values') +
+  theme_publ()
+
+```
+
+```{r}
+
+ggsave(filename = 'data_spread_vs_missing.pdf',
+       path = path,
+       width = 18.3,
+       height = 15,
+       units = 'cm',
+       device = cairo_pdf)
+
+```
+
+
+##### Sequence coverage (MS)
+
+```{r}
+
+protein_cor_data %>% 
+  mutate(Coverage = Coverage*100) |> 
+  ggplot.corrplot(X_var = Perc.Missing.MS, Y_var = Coverage) +
+  labs(x = 'Missing values (%)', y = 'Sequence coverage (%)',
+       title = 'Sequence coverage vs. missing values')
+
+```
+
+```{r}
+
+ggsave(filename = 'sequence_coverage_vs_missing_values.pdf',
+       path = path,
+       width = 8.7,
+       height = 6, 
+       units = 'cm',
+       device = cairo_pdf)
+
+```
+
+
+
+### Concentration in blood
+
+```{r}
+
+protein_cor_data %>% 
+  ggplot.corrplot(Blood.conc.ngmL, Correlation_Spearman,
+                  xlab = 'Concentration in blood (ng/mL)',
+                  ylab = 'MS-Olink correlation',
+                  title = 'MS-Olink correlation vs. protein concentration') +
+  scale_x_continuous(trans = 'log10') +
+  small_logticks('b')
+  
+
+```
+
+```{r, include=FALSE}
+
+ggsave(filename = 'MS-Olink_cor_vs_conc.pdf',
+       path = path,
+       width = 8.7,
+       height = 6, 
+       units = 'cm',
+       device = cairo_pdf)
+
+```
+
+
+
+### Olink-specific factors
+
+
+#### Values below LOD
+
+
+MS-Olink correlation among values below LOD versus values above LOD.
+
+```{r}
+
+LOD_cor_total <- overlap_data %>% 
+  filter(!is.na(Below.LOD)) %>% 
+  group_by(Below.LOD) %>% 
+  summarize(Correlation = my.cor.test(MS, NPX, cor_method = 'spearman')[['Correlation']])
+
+LOD_cor_total
+
+```
+
+```{r, warning=FALSE, message=FALSE}
+
+LOD_per_protein <- overlap_data %>% 
+  filter(!is.na(Below.LOD)) %>% 
+  group_by(UniProt, Below.LOD) %>% 
+  summarize(Correlation = my.cor.test(
+    MS, NPX, cor_method = 'spearman', verbose = F)[['Correlation']])
+
+ggplot(LOD_per_protein, aes(x = Below.LOD, y = Correlation, fill = Below.LOD)) +
+  geom_boxplot(show.legend = F, lwd = 0.5, width = 0.5) +
+  scale_fill_hue(direction = -1) +
+  labs(x = 'LOD', title = 'MS-Olink correlation by LOD') +
+  theme_publ()
+
+```
+
+
+```{r}
+
+ggsave(filename = 'MS-Olink_cor_by_LOD_boxplot.pdf',
+       path = path,
+       width = 5.5,
+       height = 5.5,
+       units = 'cm')
+
+```
+
+
+MS-Olink correlation per protein by proportion of values below LOD:
+
+
+```{r, warning=FALSE}
+
+ggplot.corrplot(protein_cor_data, X_var = Perc.below.LOD, Y_var = Correlation_Spearman) +
+  labs(title = 'MS–Olink correlation vs. missing values (Olink)',
+       x = 'Missing values (%)', y = 'MS–Olink correlation') +
+  theme_publ()
+
+```
+
+```{r}
+
+ggsave(filename = 'MS-Olink_cor_vs_belowLOD_allData.pdf',
+       path = path,
+       width = 8.7,
+       height = 6,
+       units = 'cm',
+       device = cairo_pdf)
+
+```
+
+
+Proteins that have missing values in only Olink Explore (to remove the effect of missing values in MS):
+
+```{r}
+
+protein_cor_data %>% 
+  filter(Perc.Missing.MS == 0) %>% 
+ggplot.corrplot(X_var = Perc.below.LOD, Y_var = Correlation_Spearman) +
+  labs(title = 'MS–Olink correlation vs. missing values (Olink)',
+       x = 'Missing values (%)', y = 'MS–Olink correlation') +
+  theme_publ() +
+  ylim(c(-0.75,1.3))
+
+```
+
+```{r}
+
+ggsave(filename = 'MS-Olink_cor_vs_belowLOD_allData_noMissingMS.pdf',
+       path = path,
+       width = 8.7,
+       height = 6,
+       units = 'cm',
+       device = cairo_pdf)
+
+```
+
+
+After setting <LOD values and QC warnings to NA:
+
+```{r, warning=FALSE}
+
+
+ggplot.corrplot(protein_cor_data, X_var = Perc.below.LOD,
+                Y_var = Correlation_Spearman.cleanData) +
+  labs(title = 'MS-Olink correlation vs. values below LOD',
+       x = 'Missing values (%)', y = 'MS-Olink correlation') +
+  theme_publ()
+
+```
+
+```{r}
+
+ggsave(filename = 'MS-Olink_cor_vs_belowLOD_cleanData.pdf',
+       path = path,
+       width = 8.7,
+       height = 6,
+       units = 'cm',
+       device = cairo_pdf)
+
+```
+
+
+Proteins that have missing values in only Olink Explore:
+
+```{r}
+
+protein_cor_data %>% 
+  filter(Perc.Missing.MS == 0) %>% 
+  ggplot.corrplot(X_var = Perc.below.LOD, Y_var = Correlation_Spearman.cleanData) +
+  expand_limits(y = c(0, 1.3)) +
+  labs(title = 'MS-Olink correlation vs. values below LOD',
+       x = 'Missing values (%)', y = 'MS-Olink correlation') +
+  theme_publ()
+
+
+```
+
+```{r}
+
+ggsave(filename = 'MS-Olink_cor_vs_belowLOD_cleanData_noMissingMS.pdf',
+       path = path,
+       width = 8.7,
+       height = 6,
+       units = 'cm',
+       device = cairo_pdf)
+
+```
+
+
+Dividing into intervals by proportion <LOD:
+
+```{r}
+
+intervals <- c('0', '>0-25', '>25-50', '>50-75', '>75-100')
+
+# Intervals of 25%
+intervals_olink <- protein_cor_data |> 
+  filter(Perc.Missing.MS == 0) |> 
+  mutate(Interval = cut(Perc.below.LOD, breaks = seq(-25, 100, 25),
+                        right = TRUE,
+                        labels = intervals)) |> 
+  dplyr::select(Correlation_Spearman, Perc.below.LOD, Interval)
+
+intervals_olink |> 
+  count(Interval)
+
+
+```
+
+```{r}
+
+label_df <- intervals_olink |> 
+  group_by(Interval) |> 
+  summarize(Median = median(Correlation_Spearman),
+            N = n())
+
+# test for significance
+stat_test <- intervals_olink |> 
+  t_test(
+    Correlation_Spearman ~ Interval, p.adjust.method = 'fdr',
+    comparisons = list(
+      c('0', '>0-25'), c('>0-25', '>25-50'), c('>25-50', '>50-75'), c('>50-75', '>75-100'))
+    ) |> 
+  add_xy_position(step.increase = 0.02)
+
+set.seed(1)
+NA_plot_olink <- intervals_olink |> 
+  ggplot(aes(x = Interval, y = Correlation_Spearman)) +
+  geom_jitter(aes(color = Interval), width = 0.35, size = 0.5, seed = 1) +
+    geom_boxplot(aes(fill = Interval), alpha = 0.3,
+                 outliers = F) +
+  ylim(c(-0.75,1.35)) +
+  labs(x = 'Proportion of missing values (%)', y = 'MS-Olink correlation',
+       title = 'MS-Olink correlation vs. missing values (Olink)') +
+  theme_publ() +
+  theme(legend.position = 'none') +
+  stat_pvalue_manual(data = stat_test, size = 6/.pt,
+                     tip.length = 0.015, step.increase = 0.05, bracket.nudge.y = 0.05)
+
+NA_plot_olink
+
+```
+
+```{r}
+
+ggsave(NA_plot_olink,
+       filename = 'MS-Olink_cor_vs_belowLOD_boxplot.pdf',
+       path = path,
+       width = 8.7,
+       height = 6,
+       units = 'cm')
+
+```
+
+
+The effect remains after adjusting for data spread - not merely because proteins with more missing values might have less data spread:
+
+```{r}
+
+olink_subset <- protein_cor_data |> 
+  filter(Perc.Missing.MS == 0)
+
+summary(lm(Correlation_Spearman ~ Perc.below.LOD + Range.Olink + SD.Olink + IQR.Olink, data = olink_subset))
+
+```
+
+
+
+#### Distance from LOD
+
+
+```{r}
+  
+ggplot.corrplot(protein_cor_data, Median.Dist.LOD, Correlation_Spearman,
+                xlab = 'Median distance from LOD (NPX units)',
+                ylab = 'MS-Olink correlation',
+                title = 'MS-Olink correlation vs. distance from the LOD')
+
+```
+
+```{r}
+
+ggsave(filename = 'MS-Olink_cor_vs_dist_from_LOD.pdf',
+       path = path,
+       width = 8.7,
+       height = 6,
+       units = 'cm',
+       device = cairo_pdf)
+
+```
+
+
+#### Sample QC warnings
+
+
+Sample QC warnings per protein:
+
+```{r, warning=FALSE, message=FALSE}
+
+QCwarn_per_protein <- overlap_data %>% 
+  filter(!is.na(QC_Warning)) %>%
+  group_by(UniProt, QC_Warning) %>% 
+  summarize(N = n(),
+            Correlation = my.cor.test(MS, NPX, cor_method = 'spearman', verbose = F)[['Correlation']])
+
+group_summary(QCwarn_per_protein, N, QC_Warning)
+
+```
+
+Too few data points with sample QC warnings per protein for analysis.
+
+
+Cross-platform correlation vs. number of sample QC warnings:
+
+```{r, warning=FALSE}
+
+ggplot.corrplot(protein_cor_data, X_var = N.sample.QC.warning, Y_var = Correlation_Spearman) +
+  labs(title = 'MS-Olink correlation vs. sample QC warnings',
+       x = 'Number of sample QC warnings', y = 'MS-Olink correlation') 
+
+```
+
+```{r, include=FALSE}
+
+ggsave(filename = 'MS-Olink_cor_vs_NQCwarn_allData.pdf',
+       path = path,
+       width = 8.7,
+       height = 6.5,
+       units = 'cm',
+       device = cairo_pdf)
+
+```
+
+
+```{r, warning=FALSE}
+
+ggplot.corrplot(protein_cor_data, X_var = N.sample.QC.warning, 
+                Y_var = Correlation_Spearman.cleanData) +
+  expand_limits(y = c(0, 1.3)) +
+  labs(title = 'MS-Olink correlation vs. sample QC warnings',
+       x = 'Sample QC warnings', y = 'MS-Olink correlation') 
+
+```
+
+```{r, include==FALSE}
+
+ggsave(filename = 'MS-Olink_cor_vs_NQCwarn_cleanData.pdf',
+       path = path,
+       width = 8.7,
+       height = 6.5,
+       units = 'cm',
+       device = cairo_pdf)
+
+```
+
+
+Sample QC warnings per sample:
+
+For each sample, compare MS-Olink correlations for the subset of assays with sample QC warnings and the subset of assays with no sample QC warnings:
+
+```{r, message=FALSE}
+
+sample_cor_byQCwarn <- overlap_data |> 
+  group_by(QC_Warning, Sample.ID) |>
+  summarize(Correlation = cor(MS, NPX, use = 'pairwise.complete.obs', method = 'spearman'),
+            N = n()) |> 
+  ungroup()
+
+sample_cor_byQCwarn |> 
+  group_by(QC_Warning) |>
+  # summarize Correlation and N per QC warning
+  summarize(Mean.correlation = mean(Correlation, na.rm = T),
+            Mean.N = mean(N, na.rm = T),
+            Median.correlation = median(Correlation, na.rm = T),
+            Median.N = median(N, na.rm = T),
+            Min.correlation = min(Correlation, na.rm = T),
+            Min.N = min(N, na.rm = T),
+            Max.correlation = max(Correlation, na.rm = T),
+            Max.N = max(N, na.rm = T)) 
+  
+```
+
+```{r}
+
+qcwarn_plot <- sample_cor_byQCwarn |> 
+  ggplot(aes(x = QC_Warning, y = Correlation)) +
+  geom_jitter(aes(color = QC_Warning), width = 0.3, size = 0.5, seed = 1) +
+  geom_boxplot(aes(fill = QC_Warning), alpha = 0.3,
+                 outliers = F) +
+  labs(x = 'Sample QC', y = 'Per-sample MS-Olink correlation') +
+  scale_x_discrete(labels = c('PASS' = 'Pass', 'WARN' = 'Warn')) +
+  scale_fill_manual(values = brewer.pal('Set2', n = 3)[1:2],
+                    aesthetics = c('fill', 'color'),
+                    labels = c('PASS' = 'Pass', 'WARN' = 'Warn')) +
+  theme_publ() +
+  theme(legend.position = 'none') +
+  geom_pwc(tip.length = 0.02, label.size = 6/.pt, label = 'p.signif', y.position = 1)
+
+qcwarn_plot
+  
+```
+
+```{r}
+
+ggsave(filename = 'MS-Olink_sample_cor_QCwarn.pdf',
+       path = path,
+       width = 8.7,
+       height = 6.5,
+       units = 'cm')
+
+```
+
+
+#### Assay QC warnings
+
+
+MS-Olink correlation per protein by assay QC warning:
+
+```{r, message=FALSE}
+
+assaywarn_plot <- protein_cor_data %>% 
+  mutate(Assay.QC.warning = case_when(Assay.QC.warning == 'WARN' ~ 'Warn',
+                                Assay.QC.warning == 'PASS' ~ 'Pass')) %>% 
+ggplot(aes(x = Assay.QC.warning, y = Correlation_Spearman)) +
+  geom_jitter(aes(color = Assay.QC.warning), width = 0.3, size = 0.5, seed = 1) +
+  geom_boxplot(aes(fill = Assay.QC.warning), alpha = 0.3, outliers = F) +
+  scale_fill_manual(values = brewer.pal('Set2', n = 3)[1:2],
+                    aesthetics = c('fill', 'color')) +
+  labs(x = 'Assay QC',
+       y = 'Per-protein MS-Olink correlation') +
+  geom_pwc(tip.length = 0.02, label.size = 6/.pt, label = 'p.signif', y.position = 1) +
+  theme_publ() +
+  theme(legend.position = 'none') 
+
+  assaywarn_plot
+
+```
+
+```{r, include=FALSE}
+
+ggsave(assaywarn_plot,
+       filename = 'MS-Olink_cor_assayWarn.pdf',
+       path = path,
+       width = 5.5,
+       height = 5.5,
+       units = 'cm')
+
+```
+
+
+```{r}
+
+p1 <- qcwarn_plot + ylim(c(-0.75, 1.1)) +
+  theme(plot.margin = margin(t = 0, r = 3.5, b = 3.5, l = 3.5, unit = 'pt'),
+        plot.title = element_blank())
+
+p2 <- assaywarn_plot + ylim(c(-0.75,1.1))  +
+  theme(plot.margin = margin(t = 0, r = 3.5, b = 3.5, l = 3.5, unit = 'pt'),
+        plot.title = element_blank())
+
+title <- ggplot() + labs(title = 'MS-Olink correlation by Olink QC warnings') +
+  theme_void() +
+  theme(title = element_text(size = 7))
+
+set.seed(1)     
+title / (p1 | p2) +
+  plot_layout(axes = 'collect', heights = c(0.01,1))
+
+```
+
+```{r}
+
+ggsave(filename = 'MS-Olink_cor_QCwarn_boxplots.pdf',
+       path = path,
+       width = 8.7,
+       height = 6,
+       units = 'cm')
+
+```
+
+
+#### Olink panel
+
+MS-Olink correlation per protein by Olink panel:
+
+```{r, fig.width = 7}
+
+p1 <- protein_cor_data |> 
+  ggplot(aes(x = Panel, y = Correlation_Spearman, fill = Panel.color)) +
+  geom_boxplot() +
+  labs(title = 'MS-Olink correlation by Olink Explore panel', y = 'MS-Olink correlation') +
+  scale_fill_manual(values = panel_pal) +
+  theme_publ() +
+  theme(legend.position = 'none') +
+  geom_hline(data = protein_cor_data %>% 
+               summarize(Median = median(Correlation_Spearman)),
+             aes(yintercept = Median), linetype = 'dashed',
+             lwd = 0.3) +
+  scale_x_discrete(limits = rev) +
+  coord_flip()
+
+p1
+
+```
+
+```{r, include=FALSE}
+
+ggsave(filename = 'MS-Olink_cor_per_panel.pdf', 
+       path = path,
+       width = 8.7,
+       height = 6.5,
+       units = 'cm')
+
+```
+
+Values <LOD per protein by Olink panel:
+
+```{r}
+
+p2 <- protein_cor_data %>% 
+  group_by(Panel) %>% 
+  summarize(Panel.color = unique(Panel.color),
+            Missing = mean(N.Missing.values)) %>% 
+  ggplot(aes(x = Missing, y = fct_rev(Panel), fill = Panel.color)) +
+  labs(title = 'Missing values by Olink Explore panel',
+       x = 'Mean % of missing values per protein',
+       y = 'Panel') +
+  geom_col(show.legend = FALSE, color = 'grey30', lwd = 0.3) +
+  theme_publ() +
+  scale_fill_manual(values = panel_pal)
+
+p2
+
+
+```
+
+```{r, include=FALSE}
+
+ggsave(filename = 'belowLOD_per_panel.pdf', 
+       path = path,
+       width = 8.7,
+       height = 6.5,
+       units = 'cm')
+
+```
+
+#### Olink panel version
+
+MS-Olink correlation per protein by Olink panel version:
+
+```{r}
+
+plot_data <- protein_cor_data |> 
+  mutate(Panel.version = ifelse(str_detect(Panel, ' II'), 'II', 'I'))
+
+p3 <- plot_data |> 
+  ggplot.jitterbox(Panel.version, Correlation_Spearman) +
+  labs(title = 'MS-Olink correlation by Olink Explore panel version',
+       x = 'Panel version',
+       y = 'MS-Olink correlation') +
+  theme_publ() +
+  theme(legend.position = 'none') +
+  stat_compare_means(size = 6/.pt, label.y = 1.3, hjust = 0.5)
+
+p3
+
+```
+
+```{r, include=FALSE}
+
+ggsave(filename = 'MS-Olink_cor_per_panel_version.pdf', 
+       path = path,
+       width = 8.7,
+       height = 6.5,
+       units = 'cm')
+
+```
+
+
+Values <LOD by panel version:
+
+```{r}
+
+p4 <- plot_data |> 
+  group_by(Panel.version) |>
+  summarize(Missing = mean(Perc.Missing.values)) |>
+  ggplot(aes(x = Panel.version, y = Missing)) +
+  geom_col(aes(fill = Panel.version), color = 'grey30', lwd = 0.3, show.legend = FALSE) +
+  labs(title = 'Missing values by Olink Explore panel version',
+       x = 'Panel version',
+       y = 'Mean % of missing values per protein') +
+  theme_publ() +
+  stat_pvalue_manual(data = compare_means(Perc.Missing.values~Panel.version, data = plot_data),
+                     size = 6/.pt, y.position = 33,
+                     label = '{method}, p = {round(p,3)}',
+                     remove.bracket = TRUE,
+                     hjust = 0.5) +
+  scale_y_continuous(expand = expansion(mult = c(0, 0.05)))
+p4
+
+```
+
+
+```{r, include=FALSE}
+
+ggsave(filename = 'belowLOD_per_panel_version.pdf', 
+       path = path,
+       width = 8.7,
+       height = 6.5,
+       units = 'cm')
+
+```
+
+
+```{r}
+
+p1+p3+p2+p4
+
+```
+
+```{r}
+
+ggsave(filename = 'MS-Olink_cor_panel_and_panel_version.pdf',
+       path = path,
+       width = 18.3,
+       height = 15,
+       units = 'cm')
+
+```
+
+
+Protein concentration by panel and panel version:
+
+
+```{r}
+
+protein_cor_data |> 
+  mutate(Panel = str_replace(Panel, '_', ' ')) |>
+  ggplot(aes(x = Panel, y = Blood.conc.ngmL, fill = Panel.color)) +
+  scale_y_log10(labels = log10_format(), breaks = 10^seq(-2,6,2)) +
+  geom_boxplot() +
+  labs(title = 'Protein concentration by Olink panel', x = 'Olink panel',
+       y = 'Concentration in blood (ng/mL)') +
+  scale_fill_manual(values = panel_pal) +
+  theme_publ() +
+  theme(legend.position = 'none') +
+  scale_x_discrete(limits = rev) +
+  coord_flip()
+
+
+```
+
+```{r, include=FALSE}
+
+ggsave(filename = 'protein_conc_per_panel.pdf', 
+       path = path,
+       width = 8.7,
+       height = 6.5,
+       units = 'cm')
+
+```
+
+
+```{r}
+
+plot_data |> 
+  ggplot.jitterbox(Panel.version, Blood.conc.ngmL, show.legend = F) +
+  scale_y_log10(labels = log10_format(), breaks = 10^seq(-2,6,2)) +
+  small_logticks('l') +
+  labs(title = 'Protein concentration by Olink panel version',
+       x = 'Olink panel version',
+       y = 'Concentration in blood (ng/mL)') +
+  theme_publ() +
+  stat_pvalue_manual(data = compare_means(Blood.conc.ngmL~Panel.version, data = plot_data),
+                     inherit.aes = F,
+                     size = 6/.pt, y.position = 10^5.8,
+                     label = '{method}, p = {round(p,3)}',
+                     remove.bracket = TRUE,
+                     hjust = 0.5)
+
+
+```
+
+```{r, include=FALSE}
+
+ggsave(filename = 'protein_conc_per_panel_version.pdf', 
+       path = path,
+       width = 8.7,
+       height = 6.5,
+       units = 'cm')
+
+```
+
+
+### MS-specific factors
+
+#### Missing values (MS)
+
+All data:
+
+```{r}
+
+protein_cor_data %>% 
+ggplot.corrplot(X_var = Perc.Missing.MS, Y_var = Correlation_Spearman) +
+  labs(title = 'MS–Olink correlation vs. missing values (MS)',
+       x = 'Missing values in MS (%)', y = 'MS–Olink correlation') +
+  theme_publ()
+
+```
+
+```{r}
+
+ggsave(filename = 'MS-Olink_cor_vs_missing_MS_allData.pdf',
+       path = path,
+       width = 8.7,
+       height = 6, 
+       units = 'cm',
+       device = cairo_pdf)
+
+```
+
+Removing proteins with values below the LOD in Olink:
+
+```{r}
+
+protein_cor_data %>% 
+  filter(Perc.below.LOD == 0) %>% 
+  ggplot.corrplot(X_var = Perc.Missing.MS, Y_var = Correlation_Spearman) +
+  labs(title = 'MS–Olink correlation vs. missing values (MS)',
+       x = 'Missing values in MS (%)', y = 'MS–Olink correlation') +
+  theme_publ()
+
+```
+
+
+```{r}
+
+ggsave(filename = 'MS-Olink_cor_vs_missing_MS_noBelowLOD_allData.pdf',
+       path = path,
+       width = 8.7,
+       height = 6, 
+       units = 'cm',
+       device = cairo_pdf)
+
+```
+
+Values <LOD and QC warnings set to NA:
+
+```{r, warning=FALSE}
+
+ggplot.corrplot(protein_cor_data, X_var = Perc.Missing.MS, 
+                Y_var = Correlation_Spearman.cleanData) +
+  labs(title = 'MS-Olink correlation vs. missing values (MS)',
+       x = 'Missing values in MS (%)', y = 'MS-Olink correlation') +
+  theme_publ()
+
+```
+
+```{r}
+
+ggsave(filename = 'MS-Olink_cor_vs_missing_MS_cleanData.pdf',
+       path = path,
+       width = 8.7,
+       height = 6, 
+       units = 'cm',
+       device = cairo_pdf)
+
+```
+
+Removing proteins with values below the LOD in Olink:
+
+```{r, warning=FALSE}
+
+protein_cor_data %>% 
+  filter(Perc.below.LOD == 0) %>% 
+  ggplot.corrplot(X_var = Perc.Missing.MS, Y_var = Correlation_Spearman.cleanData) +
+  labs(title = 'MS-Olink correlation vs. missing values (MS)',
+       x = 'Missing values in MS (%)', y = 'MS-Olink correlation') +
+  theme_publ()
+
+```
+
+```{r}
+
+ggsave(filename = 'MS-Olink_cor_vs_missing_MS_noBelowLOD_cleanData.pdf',
+       path = path,
+       width = 8.7,
+       height = 6, 
+       units = 'cm',
+       device = cairo_pdf)
+
+```
+
+
+```{r}
+
+intervals <- c('0', '>0-25', '>25-50', '>50-75', '>75-100')
+
+# Intervals of 25%
+intervals_ms <- protein_cor_data |> 
+  filter(Perc.below.LOD == 0) |> 
+  mutate(Interval = cut(Perc.Missing.MS, breaks = seq(-25, 100, 25),
+                        right = TRUE, 
+                        labels = intervals)) |> 
+  dplyr::select(Correlation_Spearman, Perc.Missing.MS, Interval)
+
+intervals_ms |> 
+  count(Interval)
+
+
+```
+
+```{r}
+
+label_df <- intervals_ms |> 
+  group_by(Interval) |> 
+  summarize(Median = median(Correlation_Spearman),
+            N = n())
+
+# test for significance
+stat_test2 <- intervals_ms |> 
+  t_test(
+    Correlation_Spearman ~ Interval, p.adjust.method = 'fdr',
+    comparisons = list(
+      c('0', '>0-25'), c('>0-25', '>25-50'), c('>25-50', '>50-75'), c('>50-75', '>75-100'))
+    ) |> 
+  add_xy_position()
+
+set.seed(1)
+NA_plot_MS <- intervals_ms |> 
+  ggplot(aes(x = Interval, y = Correlation_Spearman)) +
+  geom_jitter(aes(color = Interval), width = 0.35, size = 0.5, seed = 1) +
+    geom_boxplot(aes(fill = Interval), alpha = 0.3,
+                 outliers = F) +
+  ylim(c(-0.75,1.35)) +
+  labs(x = 'Proportion of missing values (%)', y = 'MS-Olink correlation',
+       title = 'MS-Olink correlation vs.  missing values (MS)') +
+  theme_publ() +
+  theme(legend.position = 'none') +
+  stat_pvalue_manual(data = stat_test2, size = 6/.pt,
+                     tip.length = 0.015, step.increase = 0.05, bracket.nudge.y = 0.04)
+
+NA_plot_MS
+
+```
+
+```{r}
+
+ggsave(NA_plot_MS,
+       filename = 'MS-Olink_cor_vs_missing_MS_boxplot.pdf',
+       path = path,
+       width = 8.7,
+       height = 6, 
+       units = 'cm')
+
+```
+
+
+```{r, fig.width=10, fig.height=4}
+
+p1 <- NA_plot_olink + labs(title = 'Correlation by values below LOD (Olink)')
+p2 <- NA_plot_MS + labs(title = 'Correlation by missing values (MS)')
+
+p2 + p1 + plot_layout(axis_titles = 'collect')
+
+```
+
+```{r}
+
+ggsave(filename = 'MS-Olink_cor_vs_missing_boxplots.pdf',
+       path = path,
+       width = 18.3,
+       height = 7, 
+       units = 'cm')
+
+
+```
+
+
+The effect remains after adjusting for data spread - not merely because proteins with more missing values might have less spread and the correlation coefficient is sensitive to data spread:
+
+```{r}
+
+ms_subset <- protein_cor_data |> 
+  filter(Perc.below.LOD == 0)
+
+summary(lm(Correlation_Spearman ~ Perc.Missing.MS + Range.MS + SD.MS + IQR.MS, data = ms_subset))
+
+```
+
+
+#### Number of PSMs
+
+
+```{r}
+
+ggplot.corrplot(protein_cor_data, X_var = median.PSMs, Y_var = Correlation_Spearman,
+                title = 'MS–Olink correlation vs. #PSMs',
+                ylab = 'MS–Olink correlation',
+                xlab = 'Median #PSMs across TMT sets') +
+  scale_x_continuous(trans = 'log10') +
+  small_logticks('b')
+
+```
+
+```{r, include=FALSE}
+
+ggsave(filename = 'MS-Olink_cor_vs_medianPSMs.pdf',
+       path = path,
+       width = 8.7,
+       height = 6, 
+       units = 'cm',
+       device = cairo_pdf)
+
+```
+
+
+Boxplots up to 10 PSMs:
+
+```{r}
+
+median_cor <- median(protein_cor_data$Correlation_Spearman, na.rm = T)
+n_df <- protein_cor_data |> 
+  mutate(PSMs = cut(
+    median.PSMs, 
+    breaks = c(0:10, 50, 100, ceiling(max(protein_cor_data$median.PSMs))),
+    right = TRUE, include.lowest = FALSE)) |> 
+  group_by(PSMs) |> 
+  summarize(Median = median(Correlation_Spearman, na.rm = T),
+            N = n()) |> 
+  filter(PSMs %in% c('(0,1]', '(1,2]', '(2,3]', '(3,4]', '(4,5]', '(5,6]', '(6,7]', '(7,8]', '(8,9]', '(9,10]')) # Plot only up to 10 PSMs
+
+plot_data <- protein_cor_data |> 
+  mutate(PSMs = cut(median.PSMs, 
+                    breaks = c(0:10, 50, 100, ceiling(max(protein_cor_data$median.PSMs))),
+                    right = TRUE, include.lowest = FALSE),
+         .before = 1)
+
+sig <- compare_means(formula = Correlation_Spearman ~ PSMs, data = plot_data, 
+                     ref.group = '.all.', method = 'wilcox.test') |> 
+  mutate(p.adj = p.adjust(p, method = 'fdr')) |> 
+  rstatix::add_significance() |> 
+  dplyr::rename(PSMs = group2) |> 
+  filter(PSMs %in% c('(0,1]', '(1,2]', '(2,3]', '(3,4]', '(4,5]', '(5,6]', '(6,7]', '(7,8]', '(8,9]', '(9,10]')) |> 
+  mutate(p.adj.signif = ifelse(p.adj.signif == 'ns', '', p.adj.signif)) # hide ns
+
+set.seed(1)
+plot_data |> 
+  filter(median.PSMs <= 10) |>
+  ggplot.jitterbox(PSMs, Correlation_Spearman, color = 'grey30', fill = 'steelblue') +
+  geom_text(data = n_df, mapping = aes(label = paste0('N = ', N), y = 1.1),
+            size = 6/.pt) +
+  geom_text(data = sig,
+            mapping = aes(label = p.adj.signif, y = 1.2),
+            size = 6/.pt) +
+  geom_hline(aes(yintercept = median_cor), linetype = 'dashed') +
+  theme_publ() +
+  labs(x = 'Median #PSMs across TMT sets', y = 'MS-Olink correlation') +
+  ylim(c(-0.75,1.2))
+  
+
+```
+
+```{r}
+
+ggsave(filename = 'MS-Olink_cor_vs_medianPSMs_boxplot.pdf',
+       path = path,
+       width = 18,
+       height = 6.5, 
+       units = 'cm')
+
+```
+
+
+##### 1 PSM proteins
+
+```{r}
+
+hist1 <- protein_cor_data |> 
+  filter(median.PSMs == 1) |> 
+  dplyr::rename(Correlation = Correlation_Spearman,
+                Cor.interval = Cor.interval_Spearman) |>
+  cor_hist(60, median_y = 0.4, table_x = -0.9, perc_colname = '%') +
+  xlim(c(-0.9,1))
+
+hist1
+
+```
+
+```{r}
+
+ggsave(filename = 'MS-Olink_cor_1PSMproteins.pdf',
+       path = path,
+       width = 8.7,
+       height = 6.5,
+       units = 'cm')
+
+```
+
+
+##### PSMs vs protein concentration
+
+
+```{r}
+
+protein_cor_data %>% 
+  ggplot.corrplot(median.PSMs, Blood.conc.ngmL) +
+  scale_x_continuous(trans = 'log10') +
+  scale_y_continuous(trans = 'log10') +
+  labs(title = 'HPA protein concentration vs. median #PSMs',
+       x = 'Median #PSMs across TMT sets', y = 'Concentration in blood (pg/mL)') +
+  small_logticks('l')
+
+```
+
+
+```{r, include=FALSE}
+
+ggsave(filename = 'protein_conc_vs_medianPSMs.pdf',
+       path = path,
+       width = 8.7,
+       height = 6, 
+       units = 'cm',
+       device = cairo_pdf)
+
+
+```
+
+
+#### Number of peptides
+
+
+```{r, warning=FALSE}
+
+ggplot.corrplot(protein_cor_data, X_var = median.Unique.peptides, Y_var = Correlation_Spearman,
+                title = 'MS-Olink correlation vs. #peptides',
+                xlab = 'Median #peptides across TMT sets',
+                ylab = 'MS-Olink correlation') +
+  scale_x_continuous(trans = 'log10') +
+  small_logticks('b') 
+
+
+```
+
+```{r, include=FALSE}
+
+ggsave(filename = 'MS-Olink_cor_vs_medianPeptides.pdf',
+       path = path,
+       width = 8.7,
+       height = 6, 
+       units = 'cm',
+       device = cairo_pdf)
+
+
+```
+
+
+Boxplots up to 10 peptides:
+
+```{r}
+
+# Base median
+median_cor <- median(protein_cor_data$Correlation_Spearman, na.rm = T)
+
+# Number of proteins in each interval
+n_df <- protein_cor_data |> 
+  mutate(Peptides = cut(median.Unique.peptides, 
+                        breaks = c(0:10, 50, 100, max(protein_cor_data$median.Unique.peptides)),
+                        right = TRUE, include.lowest = FALSE)) |> 
+  group_by(Peptides) |> 
+  summarize(Median = median(Correlation_Spearman, na.rm = T),
+            N = n()) |> 
+  filter(Peptides %in% c('(0,1]', '(1,2]', '(2,3]', '(3,4]', '(4,5]', '(5,6]', '(6,7]', '(7,8]', '(8,9]', '(9,10]'))
+  
+
+plot_data <- protein_cor_data |> 
+  mutate(Peptides = cut(median.Unique.peptides, 
+                        breaks = c(0:10, 50, 100, max(protein_cor_data$median.Unique.peptides)),
+                        right = TRUE, include.lowest = FALSE),
+         .before = 1)
+
+# Test all intervals against base median 
+sig <- compare_means(formula = Correlation_Spearman ~ Peptides, data = plot_data, 
+                     ref.group = '.all.', method = 'wilcox.test') |> 
+  mutate(p.adj = p.adjust(p, method = 'fdr')) |> 
+  rstatix::add_significance() |> 
+  dplyr::rename(Peptides = group2) |> 
+  filter(Peptides %in% c('(0,1]', '(1,2]', '(2,3]', '(3,4]', '(4,5]', '(5,6]', '(6,7]', '(7,8]', '(8,9]', '(9,10]')) |> 
+  mutate(p.adj.signif = ifelse(p.adj.signif == 'ns', '', p.adj.signif)) # hide ns
+
+# Plot up to 10 PSMs
+set.seed(1)
+plot_data |> 
+  filter(median.Unique.peptides <= 10) |> 
+  ggplot.jitterbox(Peptides, Correlation_Spearman, color = 'grey30', fill = 'steelblue') +
+  geom_text(data = n_df, mapping = aes(label = paste0('N = ', N), y = 1.1),
+            size = 6/.pt) +
+  geom_text(data = sig,
+            mapping = aes(label = p.adj.signif, y = 1.2),
+            size = 6/.pt) +
+  geom_hline(aes(yintercept = median_cor), linetype = 'dashed') +
+  theme_publ() +
+  labs(x = 'Median # peptides across TMT sets', y = 'MS-Olink correlation') +
+  lims(y = c(-0.75,1.2))
+  
+
+```
+
+```{r}
+
+ggsave(filename = 'MS-Olink_cor_vs_medianPeptides_boxplot.pdf',
+       path = path,
+       width = 18,
+       height = 6.5, 
+       units = 'cm')
+
+```
+
+##### 1 peptide proteins
+
+```{r}
+
+hist2 <- protein_cor_data |> 
+  filter(median.Unique.peptides == 1) |> 
+  dplyr::rename(Correlation = Correlation_Spearman,
+                Cor.interval = Cor.interval_Spearman) |>
+  cor_hist(60, median_y = 0.4, table_x = -0.9, perc_colname = '%') +
+  xlim(c(-0.9,1))
+
+hist2 
+
+```
+
+```{r}
+
+ggsave(filename = 'MS-Olink_cor_1Peptideproteins.pdf',
+       path = path,
+       width = 8.7,
+       height = 6.5,
+       units = 'cm')
+
+```
+
+```{r}
+
+hist1 <- hist1 + labs(title = 'Proteins with 1 PSM')
+hist2 <- hist2 + labs(title = 'Proteins with 1 peptide')
+
+guide_area() / (hist1 + hist2) +
+  plot_layout(guides = 'collect', heights = c(0.1,1)) &
+  guides(fill = guide_legend(nrow = 1))
+
+```
+
+```{r}
+
+ggsave(filename = 'cor_hist_1PSM_1Peptide_proteins.pdf',
+       path = path,
+       width = 18,
+       height = 6.5,
+       units = 'cm')
+
+```
+
+
+#### Number of proteins in group
+
+
+```{r}
+
+protein_cor_data %>% 
+  ggplot.histogram(X_var = Protein.count, 
+                   fill = blue_palette[3], color = blue_palette[2],
+                   median_line = F, median_text = F,
+                   bindwidth = 1, boundary = 0) +
+  labs(x = 'Number of proteins in group',
+       title = 'Histogram of number of proteins in group')
+
+```
+
+
+```{r}
+
+protein_cor_data %>% 
+  ggplot.corrplot(X_var = Protein.count, Y_var = Correlation_Spearman) +
+  labs(title = 'MS-Olink correlation vs. number of proteins in group',
+       x = 'Number of proteins', y = 'MS–Olink correlation') 
+
+```
+
+```{r, include=FALSE}
+
+ggsave(filename = 'MS-Olink_cor_vs_NinProteinGroup.pdf',
+       path = path,
+       width = 8.7,
+       height = 6, 
+       units = 'cm',
+       device = cairo_pdf)
+
+```
+
+
+#### Protein sequence coverage
+
+
+```{r}
+
+protein_cor_data %>% 
+  ggplot.histogram(X_var = Coverage, 
+                   fill = blue_palette[3], color = blue_palette[2],
+                   median_line = F, median_text = F,
+                   bindwidth = 1, boundary = 0) +
+  labs(x = 'Protein coverage (%)',
+       title = 'Histogram of protein coverage')
+
+```
+
+```{r}
+
+protein_cor_data %>% 
+  mutate(Coverage = Coverage * 100) %>%
+  ggplot.corrplot(X_var = Coverage, Y_var = Correlation_Spearman) +
+  labs(title = 'MS-Olink correlation vs. sequence coverage (MS)',
+       x = 'Sequence coverage (%)',
+       y = 'MS–Olink correlation')
+
+```
+
+```{r}
+
+ggsave(filename = 'MS-Olink_cor_vs_sequence_coverage.pdf',
+       path = path,
+       width = 8.7,
+       height = 6, 
+       units = 'cm',
+       device = cairo_pdf)
+
+```
+
+
+
+#### PSM quality
+
+###### Precursor mass error
+
+
+```{r}
+
+ggplot.histogram(protein_cor_data, X_var = Abs.precursor.error,
+                 title = 'Histogram of absolute precursor mass error',
+                 text_hpos = 'right',
+                 fill = blue_palette[3], color = blue_palette[2]) +
+  labs(x = 'Absolute precursor mass error (ppm)')
+
+```
+
+
+```{r}
+
+protein_cor_data %>% 
+  ggplot.corrplot(Y_var = Correlation_Spearman, X_var = Abs.precursor.error) +
+  labs(title = 'MS-Olink correlation vs. precursor mass error',
+       x = 'Mean absolute precursor mass error',
+       y = 'MS–Olink correlation')
+
+```
+
+```{r, include=FALSE}
+
+ggsave(filename = 'MS-Olink_cor_vs_precursor_error.pdf',
+       path = path,
+       width = 8.7,
+       height = 6, 
+       units = 'cm',
+       device = cairo_pdf)
+
+```
+
+```{r}
+
+ggplot.scatterplot(protein_cor_data, Perc.Missing.MS, Abs.precursor.error) +
+  labs(x = 'Proportion of missing values (%)', y = 'Mean absolute precursor mass error (ppm)',
+       title = 'Precursor mass error vs. missing values')
+
+```
+
+```{r}
+
+ggsave(filename = 'abs_precursor_error_vs_NAs.pdf',
+       path = path,
+       width = 8.7,
+       height = 6, 
+       units = 'cm')
+
+```
+
+###### MSGF score
+
+```{r}
+
+ggplot.histogram(protein_cor_data, X_var = MSGF.score,
+                 title = 'Histogram of MSGF score',
+                 fill = blue_palette[3], color = blue_palette[2]) +
+  labs(x = 'MSGF score')
+
+```
+
+
+```{r}
+
+protein_cor_data %>% 
+  ggplot.corrplot(Y_var = Correlation_Spearman, X_var = MSGF.score) +
+  labs(title = 'MS-Olink correlation vs. MSGF score',
+       x = 'Mean MSGF score', y = 'MS–Olink correlation')
+
+```
+
+```{r, include=FALSE}
+
+ggsave(filename = 'MS-Olink_cor_vs_MSGFscore.pdf',
+       path = path,
+       width = 8.7,
+       height = 6, 
+       units = 'cm',
+       device = cairo_pdf)
+
+```
+
+
+###### Percolator SVM-score
+
+```{r}
+
+ggplot.histogram(protein_cor_data, X_var = SVM.score,
+                 fill = blue_palette[3], color = blue_palette[2]) +
+  labs(x = 'SVM score',
+       title = 'Histogram of Percolator SVM score')
+
+```
+
+
+```{r}
+
+protein_cor_data %>% 
+  ggplot.corrplot(Y_var = Correlation_Spearman, X_var = SVM.score) +
+  labs(title = 'MS-Olink correlation vs. Percolator score',
+       x = 'Mean Percolator SVM score', y = 'MS–Olink correlation')
+
+```
+
+```{r, include=FALSE}
+
+ggsave(filename = 'MS-Olink_cor_vs_Percolator_score.pdf',
+       path = path,
+       width = 8.7,
+       height = 6, 
+       units = 'cm',
+       device = cairo_pdf)
+
+```
+
+
+###### FWHM (full width at half max)
+
+
+```{r}
+
+protein_cor_data %>% 
+  mutate(Abs.FWHM = log10(Abs.FWHM)) %>% 
+  ggplot.histogram(X_var = Abs.FWHM, fill = blue_palette[3], color = blue_palette[2]) +
+  labs(x = 'log10(absolute FWHM)', 
+       title = 'Histogram of absolute FWHM')
+
+```
+
+
+```{r}
+
+protein_cor_data %>% 
+  ggplot.corrplot(Y_var = Correlation_Spearman, X_var = Abs.FWHM) +
+  labs(title = 'MS-Olink correlation vs. FWHM',
+       x = 'Mean absolute FWHM', y = 'MS–Olink correlation') +
+  scale_x_continuous(trans = 'log10') +
+  small_logticks('b')
+
+
+```
+
+
+```{r, include=FALSE}
+
+ggsave(filename = 'MS-Olink_cor_vs_absolute_FWHM.pdf',
+       path = path,
+       width = 8.7,
+       height = 6, 
+       units = 'cm',
+       device = cairo_pdf)
+
+```
+
+###### Precursor ion fraction
+
+```{r}
+
+ggplot.histogram(protein_cor_data, X_var = Precursor.ion.fraction,
+                 fill = blue_palette[3], color = blue_palette[2]) +
+  labs(x = 'Precursor ion fraction',
+       title = 'Histogram of precursor ion fraction')
+
+```
+
+
+```{r}
+
+ggplot.corrplot(protein_cor_data, X_var = Precursor.ion.fraction, Y_var = Correlation_Spearman) +
+  labs(title = 'MS-Olink correlation vs. precursor ion fraction',
+       x = 'Precursor ion fraction')
+
+```
+
+```{r, include=FALSE}
+
+ggsave(filename = 'MS-Olink_cor_vs_precursor_ion_fraction.pdf',
+       path = path,
+       width = 8.7,
+       height = 6, 
+       units = 'cm',
+       device = cairo_pdf)
+
+```
+
+
+## Data spread
+
+
+```{r}
+
+data_spread_vs_cor <- data_spread_vs_NA |> 
+  left_join(protein_cor_data |> dplyr::select(UniProt, Correlation_Spearman), 
+            by = 'UniProt') 
+
+cor_coefs <- data_spread_vs_cor %>%
+  group_by(Platform, Metric) %>%
+  summarise(Pearson = cor.test(Correlation_Spearman, Value, method = 'pearson')$estimate,
+            P.value_Pearson = cor.test(Correlation_Spearman, Value, method = 'pearson')$p.value,
+            Spearman = cor.test(Correlation_Spearman, Value, method = 'spearman')$estimate,
+            P.value_Spearman = cor.test(Correlation_Spearman, Value, method = 'spearman')$p.value) |> 
+  mutate(across(c(Pearson, Spearman), round, 2),
+         across(c(P.value_Pearson, P.value_Spearman), round, 3),
+         P.label_Pearson = ifelse(P.value_Pearson < 0.001, '<0.001', paste('=', P.value_Pearson)),
+         P.label_Spearman = ifelse(P.value_Spearman < 0.001, '<0.001', paste('=', P.value_Spearman)),
+         Label_Pearson = str_glue("Pearson's R = {Pearson}, p {P.label_Pearson}"),
+         Label_Spearman = str_glue("Spearman's \u03C1 = {Spearman}, p {P.label_Spearman}"),
+         Label = paste(Label_Pearson, Label_Spearman, sep = '\n'),
+         npcx = 'left', npcy = 'top')
+
+data_spread_vs_cor |>
+  ggplot(aes(y = Correlation_Spearman, x = Value)) +
+  facet_wrap(Metric ~ Platform, scales = 'free_x', axes = 'all', ncol = 2,
+             labeller = labeller(.multi_line = FALSE)) +
+  geom_point(size = 0.5, alpha = 0.6) +
+  geom_text_npc(data = cor_coefs, aes(label = Label, npcx = npcx, npcy = npcy),
+                hjust = 0, vjust = 1, size = 6/.pt) +
+  geom_smooth(method = 'lm', se = T, color = 'steelblue', lwd = 0.5, ) +
+  scale_y_continuous(limits = c(-0.75,1.3)) +
+  labs(y = 'MS-Olink correlation', x = 'Data spread',
+       title = 'MS-Olink correlation versus data spread') +
+  theme_publ()
+
+```
+
+```{r}
+
+ggsave(filename = 'MS-Olink_cor_vs_data_spread.pdf',
+       path = path,
+       width = 18.3,
+       height = 18, 
+       units = 'cm',
+       device = cairo_pdf)
+
+```
+
+
+## Technical CV
+
+MS:
+
+```{r, warning=FALSE}
+
+protein_cor_data %>% 
+  ggplot.corrplot(Technical.CV.MS, Correlation_Spearman,
+                  xlab = 'Technical CV (%)',
+                  ylab = 'MS-Olink correlation',
+                  title = 'MS-Olink correlation vs. technical CV (MS)') +
+  theme_publ()
+
+```
+
+```{r}
+
+ggsave(path = path,
+       filename = 'MS-Olink_cor_vs_technicalCV_MS.pdf',
+       width = 8.7,
+       height = 6, 
+       units = 'cm',
+       device = cairo_pdf)
+
+```
+
+
+Olink:
+
+```{r}
+
+protein_cor_data %>% 
+  ggplot.corrplot(Technical.CV.Olink, Correlation_Spearman,
+                  xlab = 'Technical CV (%)',
+                  ylab = 'MS-Olink correlation',
+                  title = 'MS-Olink correlation vs. technical CV (Olink)') +
+  theme_publ()
+
+```
+
+```{r}
+
+ggsave(path = path,
+       filename = 'MS-Olink_cor_vs_technicalCV_Olink.pdf',
+       width = 8.7,
+       height = 6, 
+       units = 'cm',
+       device = cairo_pdf)
+
+```
+
+
+### Physical properties
+
+
+#### Mass
+
+```{r}
+
+ggplot.corrplot(protein_cor_data, X_var = Mass, Y_var = Correlation_Spearman,
+                title = 'MS-Olink correlation vs. protein mass',
+                xlab = 'Protein mass (Da)',
+                ylab = 'MS-Olink correlation') +
+  scale_x_continuous(trans = 'log10', labels = log10_format()) +
+  small_logticks('b')
+
+```
+
+```{r}
+
+ggsave(filename = 'MS-Olink_cor_vs_protein_mass.pdf',
+       path = path,
+       width = 8.7,
+       height = 6,
+       units = 'cm',
+       device = cairo_pdf)
+
+```
+
+
+#### Length
+
+```{r, warning=FALSE}
+
+ggplot.corrplot(protein_cor_data, X_var = Length, Y_var = Correlation_Spearman,
+                title = 'MS-Olink correlation vs. protein length',
+                xlab = 'Protein sequence length',
+                ylab = 'MS-Olink correlation') +
+  scale_x_continuous(trans = 'log10', labels = log10_format()) +
+  small_logticks('b')
+
+```
+
+```{r}
+
+ggsave(filename = 'MS-Olink_cor_vs_protein_length.pdf',
+       path = path,
+       width = 8.7,
+       height = 6,
+       units = 'cm',
+       device = cairo_pdf)
+
+
+```
+
+
+```{r}
+
+ggplot.corrplot(protein_cor_data, X_var = Mass, Y_var = Length) +
+  scale_x_continuous(trans = 'log10') +
+  scale_y_continuous(trans = 'log10') +
+  small_logticks('bl')
+
+```
+
+
+### Isoforms
+
+#### Number of isoforms
+
+```{r}
+
+ggplot.corrplot(protein_cor_data, X_var = Isoform.N, Y_var = Correlation_Spearman,
+                title = 'MS-Olink correlation vs. number of isoforms') +
+  labs(x = 'Number of isoforms', y = 'MS-Olink correlation')
+
+```
+
+```{r}
+
+ggsave(filename = 'MS-Olink_cor_vs_Nisoforms.pdf',
+       path = path,
+       width = 8.7,
+       height = 6, 
+       units = 'cm',
+       device = cairo_pdf)
+
+
+```
+
+

@@ -1,0 +1,1220 @@
+---
+title: "Detected proteins, missing values, and proteome coverage"
+author: "Noora Sissala"
+date: "2025-03-19"
+output: html_document
+---
+
+
+```{r setup}
+
+knitr::opts_chunk$set(echo = FALSE, warning = FALSE, message = FALSE)
+
+library(tidyverse)
+library(eulerr)
+library(patchwork)
+library(ggrepel)
+library(scales)
+library(rstatix)
+library(ggpubr)
+
+```
+
+```{r}
+
+# Load functions
+source('code/utility_functions.R')
+source('code/plotting_functions.R')
+
+# Path for saving results
+path <- 'results/proteome_coverage'
+
+if (!dir.exists(path)) {
+  dir.create(path, recursive = TRUE)
+}
+
+# MS data
+ms_data_all <- read_MS_data(withReplicateSamples = TRUE)
+
+# MS data without replicates
+ms_data <- read_MS_data()
+
+# Olink Explore data
+olink_data <- read_OlinkExplore_data(withControlSamples = FALSE,
+                                     withBelowLOD = TRUE,
+                                     withQCWarning = TRUE,
+                                     withReplicateAssays = FALSE,
+                                     removeAllLOD = TRUE) |> 
+  mutate(Below.LOD = NPX < LOD) # add column that indicates values below LOD
+
+olink_data_wide <- olink_long_to_wide(olink_data, id_cols = 'UniProt')
+
+# Sample metadata
+metadata <- read_metadata()
+metadata_MS <- read_metadata(samples = 'MS')
+
+# Protein metadata
+protein_metadata <- read.csv('data/metadata/protein_metadata.csv') |> 
+  filter(UniProt %in% ms_data$UniProt | OlinkID %in% olink_data$OlinkID)
+
+
+```
+
+## Cohort characteristics
+
+### Number of samples
+
+```{r}
+
+metadata_ms <- read_metadata(samples = 'MS')
+
+# Calculate the number of proteins in each area of the venn diagram
+n_ms <- length(setdiff(metadata_ms$Sample.ID, metadata$Sample.ID))
+n_olink <- length(setdiff(metadata$Sample.ID, metadata_ms$Sample.ID))
+
+n_overlap <- length(intersect(metadata$Sample.ID, metadata_ms$Sample.ID))
+
+pdf(file = paste0(path, '/samples_venn_euler.pdf'),
+    width = 4*0.393701, height = 4*0.393701)
+  # Plot the venn diagram
+  p <- plot(euler(
+    combinations = c('MS' = n_ms, 
+                     'Olink' = n_olink, 
+                     'MS&Olink' = n_overlap)), 
+    fills = list(fill = TDP_palette[c(1,4)], alpha = 0.5), 
+    edges = list(lwd = 2.5, col = TDP_palette[c(1,4)]), 
+    quantities = list(fontsize = 6, font = 'regular', fontfamily = 'Helvetica'), 
+    labels = list(fontsize = 7, font = 'regular', fontfamily = 'Helvetica')) 
+
+  # Adjust plot to smaller size (make sure plot is not cut off when saving)
+  p$vp$width <- unit(0.95, "npc")
+  p$vp$height <- unit(0.95, "npc")
+  
+  p
+
+dev.off()
+
+
+
+```
+
+### Age and sex distribution
+
+
+```{r}
+
+age_distr <- ggplot.density(metadata, Age, fill = '#CFD8F2', color = '#A8BAE6',
+               median_text = FALSE,
+               median_line_params = list(lwd = 0.3)) +
+  scale_x_continuous(expand=c(0,0)) +
+  scale_y_continuous(expand=expansion(c(0,0.02))) +
+  theme(axis.text.y = element_blank(),
+        axis.title.y = element_blank(),
+        axis.ticks.y = element_blank(),
+        axis.line = element_line(color = 'black'),
+        panel.background = element_rect(fill='transparent'),
+        plot.background = element_rect(fill='transparent', color=NA),
+        text = element_text(size = 8))
+
+```
+
+```{r}
+
+label_df <- data.frame(Sex = c('Female', 'Male'),
+                       x = c(1, 1),
+                       y = c(0.8, 0.3),
+                       N = as.numeric(table(metadata$Sex))) |> 
+  mutate(label = paste0(Sex, '\n', N))
+
+sex_distr <- ggplot(metadata, aes(x = 1, fill = Sex)) +
+  geom_bar(position = 'fill', show.legend = F) +
+  geom_text(data = label_df, aes(label = label, x = x, y = y),
+            size = 8/.pt) +
+  labs(x = 'Sex') +
+  theme_void() +
+  scale_y_continuous(expand=expansion(c(0,0.02))) +
+  theme(axis.title.x = element_text(size = 8)) +
+  scale_fill_manual(values = as.character(TDP_palette[c(14,11)]))
+
+```
+
+
+
+```{r}
+
+age_distr + sex_distr + plot_layout(widths = c(2.5,1)) & 
+  theme(panel.background = element_rect(fill='transparent', color = NA),
+        plot.background = element_rect(fill='transparent', color=NA))
+
+```
+
+```{r}
+
+ggsave(filename = 'cohort_characteristics.png',
+       path = path,
+       width = 4.25,
+       height = 3.25,
+       units = 'cm',
+       bg = 'transparent')
+
+```
+
+
+## Detected proteins and MS-Olink overlap
+
+```{r}
+
+olink_proteins <- unique(olink_data$UniProt)
+ms_proteins <- unique(ms_data$UniProt)
+all_proteins <- union(olink_proteins, ms_proteins)
+overlap <- intersect(olink_proteins, ms_proteins)
+
+```
+
+
+Venn diagram of detected proteins:
+
+```{r}
+
+# Calculate the number of proteins in each area of the venn diagram
+n_ms <- length(setdiff(ms_proteins, olink_proteins))
+n_olink <- length(setdiff(olink_proteins, ms_proteins))
+
+n_overlap <- length(overlap)
+
+pdf(file = paste0(path, '/venn_MS_Olink_euler.pdf'),
+    width = 5*0.393701, height = 5*0.393701)
+  # Plot the venn diagram
+  p <- plot(euler(
+    combinations = c('MS' = n_ms, 
+                     'Olink' = n_olink, 
+                     'MS&Olink' = n_overlap)),
+    fills = list(fill = TDP_palette[c(1,4)], alpha = 0.5),
+    edges = list(lwd = 2.5, col = TDP_palette[c(1,4)]), 
+    quantities = list(fontsize = 7, font = 'regular', fontfamily = 'Helvetica'), 
+    labels = list(fontsize = 8, font = 'regular', fontfamily = 'Helvetica'))
+
+  # Adjust plot to smaller size (make sure plot is not cut off when saving)
+  p$vp$width <- unit(0.95, "npc")
+  p$vp$height <- unit(0.95, "npc")
+  
+  p
+
+dev.off()
+
+
+```
+
+```{r}
+
+p
+
+```
+
+
+## Overlap with reference plasma proteome
+
+The reference plasma proteome was compiled from proteins in the Plasma section of the PeptideAtlas + proteins with a known blood concentration or secretome location = "Secreted to blood" in the Human Protein Atlas (HPA).
+
+Load data from the Human Plasma Proteome Project (HPPP) (PeptideAtlas build 2023-04):
+
+```{r}
+
+# Load data on the plasma proteome (from HPPP build 2023-04)
+hppp <- read.csv('data/external_data/query_guest_20240404-183407-615.csv')
+hppp <- hppp$biosequence_accession
+
+```
+
+Load data from HPA:
+
+```{r}
+
+hpa_data <- read.delim('data/processed_data/HPA_v24_clean.txt')
+
+hpa_plasma <- hpa_data |> 
+  filter(!is.na(Blood.conc.pgL) | Secretome.location == 'Secreted to blood')
+
+```
+
+
+The reference plasma proteome: 
+
+```{r}
+
+plasma_proteome <- union(hppp, hpa_plasma$Uniprot)
+length(plasma_proteome)
+
+```
+
+Venn diagram of detected proteins and the reference plasma proteome:
+
+```{r}
+
+n_ms <- length(setdiff(ms_proteins, union(olink_proteins, plasma_proteome)))
+n_olink <- length(setdiff(olink_proteins, union(ms_proteins, plasma_proteome)))
+n_plasma <- length(setdiff(plasma_proteome, union(ms_proteins, olink_proteins)))
+
+overlap_all <- intersect(intersect(ms_proteins, olink_proteins), plasma_proteome)
+n_overlap_all <- length(overlap_all)
+
+n_ms_olink <- length(setdiff(overlap, overlap_all))
+n_ms_plasma <- length(setdiff(intersect(ms_proteins, plasma_proteome), overlap_all))
+n_olink_plasma <- length(setdiff(intersect(olink_proteins, plasma_proteome), overlap_all))
+
+pdf(file = paste0(path, '/venn_MS_Olink_plasmaProteome_euler.pdf'),
+    width = 4*0.393701, height = 5*0.393701)
+
+  p <- plot(euler(
+    combinations = c('MS' = n_ms,
+                     'Olink' = n_olink,
+                     'Plasma proteome' = n_plasma,
+                     'MS&Olink' = n_ms_olink,
+                     'MS&Plasma proteome' = n_ms_plasma,
+                     'Olink&Plasma proteome' = n_olink_plasma,
+                     'MS&Olink&Plasma proteome' = n_overlap_all)),
+    fills = list(fill = TDP_palette[c(1,4,7)], alpha = 0.5), 
+    edges = list(lwd = 2.5, col = TDP_palette[c(1,4,7)]),
+    quantities = list(fontsize = 7, font = 'regular', fontfamily = 'Helvetica'), 
+    labels = list(fontsize = 8, font = 'regular', fontfamily = 'Helvetica'))
+
+  # Adjust plot to smaller size
+  p$vp$width <- unit(0.95, "npc")
+  p$vp$height <- unit(0.95, "npc")
+  
+  p
+
+dev.off()
+
+
+```
+
+```{r}
+
+p
+
+```
+
+
+## Plasma proteome coverage
+
+```{r}
+
+length(intersect(all_proteins, plasma_proteome))
+length(intersect(all_proteins, plasma_proteome))/length(plasma_proteome)*100
+
+
+```
+
+Bar plot of plasma proteome coverage:
+
+```{r}
+
+# Calculate proportion of proteins in MS and/or Olink that are in the reference proteome
+ms_prop <- length(intersect(ms_proteins, plasma_proteome)) / length(plasma_proteome)*100
+olink_prop <- length(intersect(olink_proteins, plasma_proteome)) / length(plasma_proteome)*100
+ms_olink_prop <- length(intersect(all_proteins, plasma_proteome)) / length(plasma_proteome)*100
+
+plot_data <- data.frame(
+  Protein_Set = factor(c(rep("MS", 2), rep("Olink", 2), rep("Both", 2)),
+                       levels = c('MS', 'Olink', 'Both')),
+  Source = factor(c('MS', 'Plasma proteome', 'Olink', 'Plasma proteome', 'Both', 'Plasma proteome'),
+                  levels = c('Plasma proteome', 'Both', 'Olink', 'MS')),
+  Proportion = c(ms_prop, 100 - ms_prop, 
+                 olink_prop, 100 - olink_prop, 
+                 ms_olink_prop, 100 - ms_olink_prop)) |> 
+  mutate(Label = paste0(round(Proportion), '%'),
+         Label = ifelse(Source == 'Plasma proteome', NA, Label))
+
+
+```
+
+
+```{r}
+
+plot_data |> 
+  ggplot(aes(fill = Source, alpha = Source, y = Proportion, x = Protein_Set)) +
+  geom_col() +
+  geom_text(aes(label = Label),
+            position = position_stack(vjust = 0.5), size = 5/.pt) +
+  scale_y_continuous(expand = expansion(mult = c(0,0.05))) +
+  theme_publ() +
+  labs(x = '', y = '') +
+  theme(axis.line.y = element_blank(),
+        axis.text.y = element_blank(),
+        axis.ticks.y = element_blank(),
+        text = element_text(size = 5),
+        legend.position = 'none') +
+  scale_fill_manual(values = as.character(TDP_palette[c(7,13,4,1)])) +
+  scale_alpha_manual(values = c(0.8,1,1,1))
+    
+    
+
+```
+
+```{r}
+
+ggsave(filename = 'plasma_proteome_coverage.pdf',
+       path = path,
+       width = 2.2,
+       height = 1.8,
+       units = 'cm')
+
+
+```
+
+
+## Overlap by Olink panel
+
+```{r}
+
+# Get the total number of proteins per panel
+proteins_per_panel <- olink_proteins_per_panel(olink_data)
+
+# Calculate number of proteins in each panel that overlap with MS
+overlap_per_panel <- olink_data %>% 
+  filter(UniProt %in% overlap) %>% 
+  group_by(Panel) %>% 
+  summarize(N = n_distinct(UniProt)) %>%
+  arrange(Panel) %>%
+  inner_join(proteins_per_panel, by = 'Panel') %>%
+  mutate(Perc = N/total.proteins*100,
+         Panel = as.factor(Panel))
+
+ggplot.barplot(overlap_per_panel, X_var = N, Y_var = Panel, Fill_var = Panel,
+               title = 'Overlap by Olink Explore panel',
+               show.legend = F) +
+  scale_y_discrete(limits = rev) +
+  geom_text(aes(x = N, y = Panel, label = paste0(round(Perc, 1), '%')),
+            size = 6/.pt, hjust = -0.1) +
+  expand_limits(x = c(0,300)) +
+  scale_fill_manual(values = panel_pal) +
+  theme(legend.position = 'none') +
+  labs(x = 'Number of proteins') +
+  theme_publ() +
+  theme(plot.title = element_text(size = 7),
+        axis.title.y = element_blank())
+
+
+```
+
+```{r, include=FALSE}
+
+ggsave(filename = 'overlap_per_panel.pdf',
+       path = path,
+       width = 5.5,
+       height = 6,
+       units = 'cm')
+
+```
+
+
+## Table of detected proteins
+
+```{r}
+
+missing_MS <- enframe(setNames(rowSums(is.na(ms_data_all[-1])), ms_data_all$UniProt), 
+                      name = 'UniProt', value = 'N.Missing.MS') |> 
+  mutate(Perc.Missing.MS = N.Missing.MS/(ncol(ms_data_all)-1)*100)
+
+ms_protein_metadata <- read.csv('data/metadata/protein_metadata_MS.csv',
+                           row.names = 1) |> 
+  dplyr::select(1:3) |> 
+  inner_join(missing_MS[c('UniProt', 'Perc.Missing.MS')], by = 'UniProt')
+
+missing_Olink <- read_OlinkExplore_data(removeAllLOD = FALSE) |> 
+  mutate(Below.LOD = NPX < LOD) |> 
+  group_by(UniProt) |>
+  summarize(N.Missing.Olink = sum(Below.LOD),
+            Perc.Missing.Olink = N.Missing.Olink/n()*100)
+
+olink_protein_metadata <- read_OlinkExplore_data(removeAllLOD = FALSE) |> 
+  distinct(OlinkID, UniProt, Assay, Panel, Panel_Lot_Nr, PlateID) |> 
+  left_join(missing_Olink[c('UniProt', 'Perc.Missing.Olink')], by = 'UniProt')
+
+protein_table <- full_join(ms_protein_metadata, olink_protein_metadata, by = 'UniProt') |> 
+  mutate(Analyzed.MS = !is.na(Gene.Name),
+         Analyzed.Olink = !is.na(Assay),
+         Detected.MS = Analyzed.MS & Perc.Missing.MS < 100,
+         Detected.Olink = Analyzed.Olink & Perc.Missing.Olink < 100,
+         Overlapping = Detected.MS & Detected.Olink,
+         Detected.Platform = case_when(Detected.MS & Detected.Olink ~ 'Both',
+                                       Detected.MS & !Detected.Olink ~ 'MS',
+                                       Detected.Olink & !Detected.MS ~ 'Olink',
+                                       TRUE ~ 'None'),
+         In.HPA = UniProt %in% hpa_data$Uniprot, # Is protein in the entire HPA
+         In.HPA.Plasma = UniProt %in% hpa_plasma$Uniprot, # Does protein have a blood concentration in HPA or is it classified as secreted to blood
+         In.HPPP = UniProt %in% hppp, # Is protein in the Plasma section of the PeptideAtlas (Human Plasma Proteome Project)
+         In.Ref.Plasma.Proteome = UniProt %in% plasma_proteome) |> # Is protein in the reference plasma proteome
+  dplyr::select(UniProt, Gene.Name, Description, # MS protein information
+                OlinkID, Assay, Panel, Panel_Lot_Nr, PlateID, # Olink protein information
+                Analyzed.MS, Detected.MS, Perc.Missing.MS, # MS detection information
+                Analyzed.Olink, Detected.Olink, Perc.Missing.Olink, # Olink detection information
+                everything())
+
+write.csv(protein_table, file.path(path, 'detected_proteins.csv'),
+          row.names = FALSE)
+
+```
+
+
+## Missing values and detection rates
+
+Summary of missing values and detected proteins:
+
+```{r}
+
+labels <- c('0', '(0-25]', '(25-50]', '(50-75]', '(75-100]')
+
+plot_data <- bind_rows('MS' = missing_MS |> 
+                         dplyr::rename(N.Missing = N.Missing.MS, 
+                                       Perc.Missing = Perc.Missing.MS), 
+                       'Olink' = missing_Olink |> 
+                         dplyr::rename(N.Missing = N.Missing.Olink, 
+                                       Perc.Missing = Perc.Missing.Olink) |> 
+                         filter(Perc.Missing < 100),
+                       .id = 'Platform') |> 
+  mutate(Perc.missing.interval = as.character(cut(
+    Perc.Missing, breaks = seq(-25, 100, 25), labels = labels, include.lowest = F, right = T)),
+    Perc.missing.interval = factor(Perc.missing.interval, levels = labels)) |>
+  group_by(Platform, Perc.missing.interval) %>%
+  summarize(N = n()) %>% 
+  mutate(Cumulative = cumsum(N),
+         Perc = N/sum(N)*100,
+         Cumulative.perc = Cumulative/sum(N)*100)
+
+ggplot(plot_data, aes(x = Perc.missing.interval, y = Perc, fill = Platform, color = Platform)) + 
+  geom_col(position = position_dodge(width = 0.8), width = 0.73) +
+  geom_point(aes(y = Cumulative.perc), size = 1) +
+  geom_line(aes(y = Cumulative.perc, group = Platform),
+            linewidth = 0.8) +
+  geom_label_repel(aes(y = Cumulative.perc, label = Cumulative), 
+             fill = 'white', show.legend = F, size = 6/.pt, direction = 'y',
+             nudge_y = 5, label.padding = 0.1) +
+  labs(x = 'Proportion of missing values (%)', y = 'Proportion of proteins (%)', 
+       color = 'Platform', fill = 'Platform', linetype = '') +
+  theme_publ() +
+  scale_y_continuous(expand = expansion(mult = c(0, 0.05)), breaks = seq(0, 100, 20),
+                     limits = c(0, 110)) +
+  scale_color_manual(values = TDP_palette[c(1,4)], aesthetics = c('color', 'fill')) +
+  scale_linetype_manual(values = c('Cumulative sum' = 'solid')) 
+
+```
+
+```{r}
+
+ggsave(filename = 'detectedProteins_and_NAs_combined.pdf',
+       path = path,
+       width = 6.5,
+       height = 6.5,
+       unit = 'cm',
+       device = 'pdf')
+
+```
+
+
+## Missing values per sample (MS)
+
+```{r}
+
+NA_per_sample <- ms_data %>%
+  pivot_longer(cols = -UniProt,
+               values_to = 'Value',
+               names_to = 'Sample.ID') %>%
+  group_by(Sample.ID, .drop = FALSE) %>%
+  summarize(N.missing = sum(is.na(Value)),
+            Perc.missing = sum(is.na(Value))/n()*100,
+            Total = n()) %>%
+  ungroup() |> 
+  left_join(metadata_MS, by = 'Sample.ID') |> 
+  mutate(TMT.set = factor(TMT.set, 
+                          levels = c('setA', 'setB', 'setC', 'setD', 'setE',
+                                     'setF', 'setG', 'setH'))) |> 
+  arrange(TMT.set)
+                                              
+
+
+ggplot(NA_per_sample, aes(x = reorder(Sample.ID, Perc.missing), y = Perc.missing,
+                          fill = TMT.set)) + 
+  geom_col() +
+  scale_y_continuous(expand = expansion(mult = c(0, 0.05))) +
+  theme_publ() +
+  theme(axis.text.x = element_blank(),
+        axis.ticks.x = element_blank()) +
+  labs(x = 'Sample', y = 'Proportion of missing values (%)', fill = 'TMT set') +
+  scale_fill_manual(values = desaturate(lighten(hue_pal()(8), 0.3), 0.2))
+  
+
+```
+
+```{r}
+
+ggsave(filename = 'NAs_per_sample.pdf',
+       path = path,
+       width = 12.5,
+       height = 8.5,
+       units = 'cm',
+       device = 'pdf')
+
+```
+
+
+## Missing values vs. concentration in blood
+
+```{r}
+
+conc_data <- hpa_plasma %>% 
+  filter(!is.na(Blood.conc.ngmL)) %>% 
+  dplyr::select(Uniprot, Blood.conc.ngmL) |> 
+  distinct() 
+
+```
+
+```{r}
+
+labels <- c('0', '(0-25]', '(25-50]', '(50-75]', '(75-100]')
+
+plot_data <- bind_rows(
+  'MS' = missing_MS |> 
+    dplyr::rename(N.Missing = N.Missing.MS, Perc.Missing = Perc.Missing.MS), 
+  'Olink' = missing_Olink |>
+    dplyr::rename(N.Missing = N.Missing.Olink, Perc.Missing = Perc.Missing.Olink) |>
+    filter(Perc.Missing < 100), 
+  .id = 'Platform') |>
+  inner_join(conc_data, by = join_by(UniProt == Uniprot)) |> 
+  mutate(Interval = cut(
+    Perc.Missing, breaks = seq(-25,100,25), labels = labels, 
+    right = TRUE, include.lowest = FALSE))
+
+# Calculate p-values
+stat_df <- plot_data |> 
+  group_by(Interval) |>
+  wilcox_test(Blood.conc.ngmL ~ Platform) |> 
+  adjust_pvalue(method = 'fdr') |>
+  add_significance('p.adj') |> 
+  add_xy_position(x = 'Interval', y.trans = log10)
+
+conc_plot <- plot_data |> 
+  ggplot.jitterbox(Interval, Blood.conc.ngmL, Color_var = Platform) +
+  scale_y_continuous(trans = 'log10', labels = log10_format(),
+                     breaks = 10^seq(-2,9,2)) +
+  labs(x = 'Proportion of missing values (%)', y = 'Concentration in blood (ng/mL)') +
+  scale_color_manual(values = TDP_palette[c(1,4)], aesthetics = c('color', 'fill')) +
+  stat_pvalue_manual(stat_df, inherit.aes = F, y.position = 8.5,
+                     tip.length = 0.02, size = 6/.pt)
+
+conc_plot
+
+```
+
+```{r}
+
+ggsave(conc_plot,
+       filename = 'NAs_vs_conc_boxplot.pdf',
+       path = path,
+       width = 8.7, 
+       height = 6.5,
+       units = 'cm',
+       device = 'pdf')
+
+```
+
+
+## Concentration of detected proteins
+
+### All detected proteins
+
+```{r}
+
+conc_data_detected <- conc_data %>% 
+  mutate(Platform = case_when(
+    Uniprot %in% ms_proteins & ! Uniprot %in% olink_proteins ~ 'MS',
+    Uniprot %in% olink_proteins & ! Uniprot %in% ms_proteins ~ 'Olink',
+    Uniprot %in% ms_proteins & Uniprot %in% olink_proteins ~ 'MS,Olink')) %>% 
+  separate_longer_delim(cols = Platform, ',') |> 
+  mutate(Platform = factor(Platform, levels = c('MS', 'Olink'))) |> 
+  filter(!is.na(Platform))
+
+```
+
+
+```{r}
+
+# Calculate p-value for difference in concentration between platforms
+stat_df <- conc_data_detected %>% 
+  group_by(Platform) %>% 
+  summarize(Median = round(median(Blood.conc.ngmL, na.rm = T), 2),
+            Q1 = round(quantile(Blood.conc.ngmL, 0.25, na.rm = T), 2),
+            Q3 = round(quantile(Blood.conc.ngmL, 0.75, na.rm = T), 2)) |>  
+  mutate(y = c(0.43,0.45),
+         npcy = c(0.9,0.95))
+
+# P-value label for plot
+pval <- wilcox.test(Blood.conc.ngmL ~ Platform, data = conc_data_detected)$p.value
+pval_label <- ifelse(pval < 0.001, 'p <0.001', paste('p =', round(pval, 3)))
+
+# Concentration density plot
+p1 <- ggplot(conc_data_detected, 
+             aes(x = Blood.conc.ngmL, color = Platform, fill = Platform)) +
+  geom_density(alpha = 0.5) +
+  scale_x_continuous(trans = 'log10',
+                     breaks = 10^(seq(-2,8,2)),
+                     expand = expansion(c(0,0)),
+                     labels = trans_format('log10', math_format(10^.x))) +
+  scale_y_continuous(expand = expansion(c(0, 0.05)),
+                     limits = c(0,0.45)) +
+  theme_publ() +
+  labs(x = 'Concentration in blood (ng/mL)', y = 'Density',
+       title = 'All detected proteins') +
+  scale_color_manual(values = TDP_palette[c(1,4)],
+                     aesthetics = c('color', 'fill')) +
+  # add point and line for median and IQR
+  geom_point(
+    data = stat_df,
+    mapping = aes(x = Median, y = y, color = Platform),
+    size = 1.5) +
+  geom_segment(
+    data = stat_df,
+    mapping = aes(x = Q1, xend = Q3, color = Platform, y = y),
+    linewidth = 0.5) +
+  # add p.value
+  geom_text_npc(data = data.frame(
+    npcx = 'right', npcy = 0.95, label = pval_label), 
+    mapping = aes(npcx = npcx, npcy = npcy, 
+                  label = str_glue('Wilcoxon, {label}')),
+    size = 6/.pt, hjust = 1)
+
+p1
+
+```
+
+
+### Uniquely detected proteins
+
+
+```{r}
+
+ms_unique <- setdiff(ms_proteins, olink_proteins)
+olink_unique <- setdiff(olink_proteins, ms_proteins)
+
+unique_conc_data <- filter(conc_data_detected, 
+                           Uniprot %in% ms_unique & Platform == 'MS' | 
+                             Uniprot %in% olink_unique & Platform == 'Olink')
+
+```
+
+
+```{r}
+
+# Calculate p-value for difference in concentration between platforms
+stat_df_unique <- unique_conc_data %>% 
+  group_by(Platform) %>% 
+  summarize(Median = round(median(Blood.conc.ngmL, na.rm = T), 2),
+            Q1 = round(quantile(Blood.conc.ngmL, 0.25, na.rm = T), 2),
+            Q3 = round(quantile(Blood.conc.ngmL, 0.75, na.rm = T), 2)) |>  
+  mutate(y = c(0.43,0.45),
+         npcy = c(0.9,0.95))
+
+# P-value label for plot
+pval_unique <- wilcox.test(Blood.conc.ngmL ~ Platform, data = unique_conc_data)$p.value
+pval_label_unique <- ifelse(pval_unique < 0.001, 'p <0.001', paste('p =', round(pval_unique, 3)))
+
+# Concentration density plot
+p2 <- ggplot(unique_conc_data, aes(x = Blood.conc.ngmL, color = Platform, fill = Platform)) +
+  geom_density(alpha = 0.5) +
+  scale_x_continuous(trans = 'log10',
+                     breaks = 10^(seq(-2,7,2)),
+                     expand = expansion(c(0,0)),
+                     labels = trans_format('log10', math_format(10^.x))) +
+  scale_y_continuous(expand = expansion(c(0, 0.05)),
+                     limits = c(0,0.45)) +
+  theme_publ() +
+  labs(x = 'Concentration in blood (ng/mL)', y = 'Density',
+       title = 'Detected with one method only') +
+  scale_color_manual(values = TDP_palette[c(1,4)],
+                     aesthetics = c('color', 'fill')) +
+  # add point and line for median and IQR
+  geom_point(
+    data = stat_df_unique,
+    mapping = aes(x = Median, y = y, color = Platform),
+    size = 1.5) +
+  geom_segment(
+    data = stat_df_unique,
+    mapping = aes(x = Q1, xend = Q3, color = Platform, y = y),
+    linewidth = 0.5) +
+  # add p.value
+  geom_text_npc(data = data.frame(
+    npcx = 'right', npcy = 0.95, label = pval_label_unique), 
+    mapping = aes(npcx = npcx, npcy = npcy, 
+                  label = str_glue('Wilcoxon, {label}')),
+    size = 6/.pt, hjust = 1)
+
+p2
+
+
+```
+
+```{r}
+
+# Combine plots
+guide_area() +  p1 + p2 + 
+  plot_layout(design = 'AA\nBC', guides = 'collect', axis_titles = 'collect', 
+              heights = c(0.4, 10), nrow = 2, ncol = 1)
+
+ggsave(filename = 'HPA_bloodConc_density_plots.pdf',
+       path = path,
+       width = 12,
+       height = 6.5,
+       units = 'cm')
+
+```
+
+## Plasma proteome coverage by concentration interval
+
+```{r}
+
+# Which proteins were detected by each platform
+conc_prop <- conc_data %>% 
+  mutate(Platform = case_when(
+    Uniprot %in% ms_proteins & ! Uniprot %in% olink_proteins ~ 'MS',
+    Uniprot %in% olink_proteins & ! Uniprot %in% ms_proteins ~ 'Olink',
+    Uniprot %in% ms_proteins & Uniprot %in% olink_proteins ~ 'Both',
+    !(Uniprot %in% ms_proteins | Uniprot %in% olink_proteins) ~ 'Not detected')) %>% 
+  mutate(Platform = factor(Platform, levels = c('Both', 'MS', 'Olink', 'Not detected')))
+               
+conc_prop |>     
+ggplot.histogram(Blood.conc.ngmL, Fill_var = Platform, breaks = 10^(seq(-3, 8, 0.5)),
+                   position = position_fill(reverse = T), median_line = F,
+                   median_text = F, alpha = 0.9) +
+  scale_x_continuous(trans = 'log10', expand = expansion(c(0,0.01)), 
+                     breaks = 10^(seq(-3, 8, 1)),
+                     labels = log10_format()) +
+  scale_y_continuous(expand = expansion(c(0,0.01))) +
+  labs(x = 'Concentration in blood (ng/mL)',
+       y = 'Proportion of plasma proteins') +
+  scale_color_manual(values = c('Not detected' = TDP_palette[[7]],
+                                'Both' = TDP_palette[[13]],
+                                TDP_palette[c(1,4)]),
+                     aesthetics = c('color', 'fill')) +
+  theme_publ()
+
+```
+
+```{r}
+
+ggsave(filename = 'HPA_bloodConc_plasmaProteomeCoverage.pdf',
+       path = path,
+       width = 8.7,
+       height = 6.5,
+       units = 'cm')
+
+
+```
+
+
+
+## Proteins with max 50% missing values
+
+Note: proportion of missing values for MS is calculated based on all MS samples (120).
+
+### Detected proteins and MS-Olink overlap
+
+```{r}
+
+ms_data_filtered <- na_omit_prop(ms_data_all, max_na_prop = 0.5, 
+                                 ignore_cols = 'UniProt')
+
+olink_data_filtered <- read_OlinkExplore_data(withBelowLOD = FALSE) |>
+  olink_long_to_wide(id_cols = 'UniProt') |> 
+  na_omit_prop(max_na_prop = 0.5, ignore_cols = 'UniProt')
+
+overlap_filtered <- unique(intersect(ms_data_filtered$UniProt, olink_data_filtered$UniProt))
+all_proteins_filtered <- unique(union(ms_data_filtered$UniProt, olink_data_filtered$UniProt))
+
+```
+
+
+Venn diagram of detected proteins with max 50% missing values:
+
+```{r}
+
+n_ms <- length(setdiff(ms_data_filtered$UniProt, olink_data_filtered$UniProt))
+n_olink <- length(setdiff(olink_data_filtered$UniProt, ms_data_filtered$UniProt))
+
+n_overlap <- length(overlap_filtered)
+
+pdf(file = paste0(path, '/venn_MS_Olink_euler_max50percNA.pdf'),
+    width = 4*0.393701, height = 4*0.393701)
+  p <- plot(euler(
+    combinations = c('MS' = n_ms, 
+                     'Olink' = n_olink, 
+                     'MS&Olink' = n_overlap)), 
+    fills = list(fill = TDP_palette[c(1,4)], alpha = 0.5), 
+    edges = list(lwd = 2.5, col = TDP_palette[c(1,4)]), 
+    quantities = list(fontsize = 7, font = 'regular', fontfamily = 'Helvetica'), 
+    labels = list(fontsize = 8, font = 'regular', fontfamily = 'Helvetica')) 
+
+  p$vp$width <- unit(0.95, "npc")
+  p$vp$height <- unit(0.95, "npc")
+  
+  p
+  
+dev.off()
+
+```
+
+```{r}
+
+p
+
+```
+
+
+
+### Overlap with reference plasma proteome
+
+Venn diagram of detected proteins with max 50% missing values and the reference plasma proteome:
+
+```{r}
+
+n_ms <- length(setdiff(ms_data_filtered$UniProt, union(olink_data_filtered$UniProt, plasma_proteome)))
+n_olink <- length(setdiff(olink_data_filtered$UniProt, union(ms_data_filtered$UniProt, plasma_proteome)))
+n_plasma <- length(setdiff(plasma_proteome, union(ms_data_filtered$UniProt, olink_data_filtered$UniProt)))
+
+overlap_all <- intersect(intersect(ms_data_filtered$UniProt, olink_data_filtered$UniProt), plasma_proteome)
+n_overlap_all <- length(overlap_all)
+
+n_ms_olink <- length(setdiff(overlap_filtered, overlap_all))
+n_ms_plasma <- length(setdiff(intersect(ms_data_filtered$UniProt, plasma_proteome), overlap_all))
+n_olink_plasma <- length(setdiff(intersect(olink_data_filtered$UniProt, plasma_proteome), overlap_all))
+
+pdf(file = paste0(path, '/venn_MS_Olink_plasmaProteome_euler_max50percNA.pdf'),
+    width = 4*0.393701, height = 5*0.393701)
+
+  p <- plot(euler(
+    combinations = c('MS' = n_ms,
+                     'Olink' = n_olink,
+                     'Plasma proteome' = n_plasma,
+                     'MS&Olink' = n_ms_olink,
+                     'MS&Plasma proteome' = n_ms_plasma,
+                     'Olink&Plasma proteome' = n_olink_plasma,
+                     'MS&Olink&Plasma proteome' = n_overlap_all)),
+    fills = list(fill = TDP_palette[c(1,4,7)], alpha = 0.5), 
+    edges = list(lwd = 2.5, col = TDP_palette[c(1,4,7)]),
+    quantities = list(fontsize = 7, font = 'regular', fontfamily = 'Helvetica'), 
+    labels = list(fontsize = 8, font = 'regular', fontfamily = 'Helvetica'))
+
+  p$vp$width <- unit(0.95, "npc")
+  p$vp$height <- unit(0.95, "npc")
+  
+  p
+  
+dev.off()
+
+
+```
+
+```{r}
+
+p
+
+```
+
+
+### Plasma proteome coverage
+
+```{r}
+
+length(intersect(all_proteins_filtered, plasma_proteome))
+length(intersect(all_proteins_filtered, plasma_proteome))/length(plasma_proteome)*100
+
+
+```
+
+
+```{r}
+
+ms_prop <- length(intersect(ms_data_filtered$UniProt, plasma_proteome)) / length(plasma_proteome)*100
+olink_prop <- length(intersect(olink_data_filtered$UniProt, plasma_proteome)) / length(plasma_proteome)*100
+ms_olink_prop <- length(intersect(all_proteins_filtered, plasma_proteome)) / length(plasma_proteome)*100
+
+plot_data <- data.frame(
+  Protein_Set = factor(c(rep("MS", 2), rep("Olink", 2), rep("Both", 2)),
+                       levels = c('MS', 'Olink', 'Both')),
+  Source = factor(c('MS', 'Plasma proteome', 'Olink', 'Plasma proteome', 'Both', 'Plasma proteome'),
+                  levels = c('Plasma proteome', 'Both', 'Olink', 'MS')),
+  Proportion = c(ms_prop, 100 - ms_prop, 
+                 olink_prop, 100 - olink_prop, 
+                 ms_olink_prop, 100 - ms_olink_prop)) |> 
+  mutate(Label = paste0(round(Proportion), '%'),
+         Label = ifelse(Source == 'Plasma proteome', NA, Label))
+
+
+```
+
+
+```{r}
+
+plot_data |> 
+  ggplot(aes(fill = Source, alpha = Source, y = Proportion, x = Protein_Set)) +
+  geom_col() +
+  geom_text(aes(label = Label),
+            position = position_stack(vjust = 0.5), size = 5/.pt) +
+  scale_y_continuous(expand = expansion(mult = c(0,0.05))) +
+  theme_publ() +
+  labs(x = '', y = '') +
+  theme(axis.line.y = element_blank(),
+        axis.text.y = element_blank(),
+        axis.ticks.y = element_blank(),
+        text = element_text(size = 5),
+        legend.position = 'none') +
+  scale_fill_manual(values = as.character(TDP_palette[c(7,13,4,1)])) +
+  scale_alpha_manual(values = c(0.8,1,1,1))
+    
+    
+
+```
+
+```{r}
+
+ggsave(filename = 'plasma_proteome_coverage_max50percNA.pdf',
+       path = path,
+       width = 2.2,
+       height = 1.8,
+       units = 'cm')
+
+
+```
+
+
+### Overlap per Olink panel
+
+```{r}
+
+overlap_per_panel_max50NA <- olink_data %>% 
+  filter(UniProt %in% overlap_filtered) %>% 
+  group_by(Panel) %>% 
+  summarize(N = n_distinct(UniProt)) %>%
+  arrange(Panel) %>%
+  inner_join(proteins_per_panel, by = 'Panel') %>%
+  mutate(Perc = N/total.proteins*100,
+         Panel = as.factor(Panel))
+
+ggplot.barplot(overlap_per_panel_max50NA, X_var = N, Y_var = Panel, Fill_var = Panel,
+               title = 'Overlap by Olink Explore panel',
+               show.legend = F) +
+  scale_y_discrete(limits = rev) +
+  geom_text(aes(x = N, y = Panel, label = paste0(round(Perc, 1), '%')),
+            size = 6/.pt, hjust = -0.1) +
+  expand_limits(x = c(0,300)) +
+  scale_fill_manual(values = panel_pal) +
+  theme(legend.position = 'none') +
+  labs(x = 'Number of proteins') +
+  theme_publ()
+
+```
+
+```{r, include=FALSE}
+
+ggsave(filename = 'overlap_per_panel_max50percNA.pdf',
+       path = path,
+       width = 6.5,
+       height = 6,
+       units = 'cm')
+
+```
+
+
+### Concentration of detected proteins
+
+
+All proteins detected with max 50% missing values:
+
+```{r}
+
+ms_proteins_max50NA <- ms_data_filtered$UniProt
+olink_proteins_max50NA <- olink_data_filtered$UniProt
+
+conc_data_detected_max50NA <- conc_data %>%
+  mutate(Platform = case_when(
+    Uniprot %in% ms_proteins_max50NA & !Uniprot %in% olink_proteins_max50NA ~ 'MS',
+    Uniprot %in% olink_proteins_max50NA & !Uniprot %in% ms_proteins_max50NA ~ 'Olink',
+    Uniprot %in% ms_proteins_max50NA & Uniprot %in% olink_proteins_max50NA ~ 'MS,Olink')) %>% 
+  separate_longer_delim(cols = Platform, ',') |> 
+  filter(!is.na(Platform))
+
+```
+
+```{r}
+
+# Calculate p-value for difference in concentration between platforms
+stat_df_max50NA <- conc_data_detected_max50NA %>% 
+  group_by(Platform) %>% 
+  summarize(Median = round(median(Blood.conc.ngmL, na.rm = T), 2),
+            Q1 = round(quantile(Blood.conc.ngmL, 0.25, na.rm = T), 2),
+            Q3 = round(quantile(Blood.conc.ngmL, 0.75, na.rm = T), 2)) |>  
+  mutate(y = c(0.4,0.42),
+         npcy = c(0.9,0.95))
+
+# P-value label for plot
+pval_max50NA <- wilcox.test(Blood.conc.ngmL ~ Platform, data = conc_data_detected_max50NA)$p.value
+pval_label_max50NA <- ifelse(pval_max50NA < 0.001, 'p <0.001', paste('p =', round(pval_max50NA, 3)))
+
+# Concentration density plot
+p1 <- ggplot(conc_data_detected_max50NA, 
+             aes(x = Blood.conc.ngmL, color = Platform, fill = Platform)) +
+  geom_density(alpha = 0.5) +
+  scale_x_continuous(trans = 'log10',
+                     breaks = 10^(seq(-2,7,2)),
+                     expand = expansion(c(0,0)),
+                     labels = log10_format()) +
+  scale_y_continuous(expand = expansion(c(0, 0.05)),
+                     limits = c(0,0.43)) +
+  theme_publ() +
+  labs(x = 'Concentration in blood (ng/mL)', y = 'Density',
+       title = 'All detected proteins') +
+  scale_color_manual(values = TDP_palette[c(1,4)],
+                     aesthetics = c('color', 'fill')) +
+  # add point and line for median and IQR
+  geom_point(
+    data = stat_df_max50NA,
+    mapping = aes(x = Median, y = y, color = Platform),
+    size = 1.5) +
+  geom_segment(
+    data = stat_df_max50NA,
+    mapping = aes(x = Q1, xend = Q3, color = Platform, y = y),
+    linewidth = 0.5) +
+  # add p.value
+  geom_text_npc(data = data.frame(
+    npcx = 'right', npcy = 0.95, label = pval_label_max50NA), 
+    mapping = aes(npcx = npcx, npcy = npcy, 
+        label = str_glue('Wilcoxon, {label}')),
+    size = 6/.pt, hjust = 1)
+
+p1
+
+```
+
+
+Uniquely detected proteins with max 50% missing values:
+
+
+```{r}
+
+ms_unique_max50NA <- setdiff(ms_proteins_max50NA, olink_proteins_max50NA)
+olink_unique_max50NA <- setdiff(olink_proteins_max50NA, ms_proteins_max50NA)
+
+unique_conc_data_max50NA <- filter(conc_data_detected_max50NA, 
+                           Uniprot %in% ms_unique_max50NA & Platform == 'MS' | 
+                             Uniprot %in% olink_unique_max50NA & Platform == 'Olink')
+
+```
+
+```{r}
+
+# Calculate p-value for difference in concentration between platforms
+stat_df_max50NA_unique <- unique_conc_data_max50NA %>% 
+  group_by(Platform) %>% 
+  summarize(Median = round(median(Blood.conc.ngmL, na.rm = T), 2),
+            Q1 = round(quantile(Blood.conc.ngmL, 0.25, na.rm = T), 2),
+            Q3 = round(quantile(Blood.conc.ngmL, 0.75, na.rm = T), 2)) |>  
+  mutate(y = c(0.4,0.42),
+         npcy = c(0.9,0.95))
+
+# P-value label for plot
+pval_max50NA_unique <- wilcox.test(Blood.conc.ngmL ~ Platform, data = unique_conc_data_max50NA)$p.value
+pval_label_max50NA_unique <- ifelse(pval_max50NA_unique < 0.001, 'p <0.001', paste('p =', round(pval_max50NA_unique, 3)))
+
+# Concentration density plot
+p2 <- ggplot(unique_conc_data_max50NA, aes(x = Blood.conc.ngmL, color = Platform, fill = Platform)) +
+  geom_density(alpha = 0.5) +
+  scale_x_continuous(trans = 'log10',
+                     breaks = 10^(seq(-2,7,2)),
+                     expand = expansion(c(0,0)),
+                     labels = log10_format()) +
+  scale_y_continuous(expand = expansion(c(0, 0.05)),
+                     limits = c(0,0.43)) +
+  theme_publ() +
+  labs(x = 'Concentration in blood (ng/mL)', y = 'Density',
+       title = 'Detected with one method only') +
+  scale_color_manual(values = TDP_palette[c(1,4)],
+                     aesthetics = c('color', 'fill')) +
+  # add point and line for median and IQR
+  geom_point(
+    data = stat_df_max50NA_unique,
+    mapping = aes(x = Median, y = y, color = Platform),
+    size = 1.5) +
+  geom_segment(
+    data = stat_df_max50NA_unique,
+    mapping = aes(x = Q1, xend = Q3, color = Platform, y = y),
+    linewidth = 0.5) +
+  # add p.value
+  geom_text_npc(data = data.frame(
+    npcx = 'right', npcy = 0.95, label = pval_label_max50NA_unique), 
+    mapping = aes(npcx = npcx, npcy = npcy, 
+                  label = str_glue('Wilcoxon, {label}')),
+    size = 6/.pt, hjust = 1)
+
+p2
+
+
+```
+
+```{r}
+
+## Combine plots
+guide_area() +  p1 + p2 +  # put legend above plot titles
+  plot_layout(design = 'AA\nBC', guides = 'collect', axis_titles = 'collect', 
+              heights = c(0.4, 10), nrow = 2, ncol = 1)
+
+ggsave(filename = 'HPA_bloodConc_density_plots_max50NA.pdf',
+       path = path,
+       width = 11.3,
+       height = 6.5,
+       units = 'cm')
+
+```
+
+### Plasma proteome coverage by concentration interval
+
+```{r}
+
+# Which proteins were detected by each platform
+conc_prop_max50NA <- conc_data %>% 
+  mutate(Platform = case_when(
+    Uniprot %in% ms_proteins_max50NA & ! Uniprot %in% olink_proteins_max50NA ~ 'MS',
+    Uniprot %in% olink_proteins_max50NA & ! Uniprot %in% ms_proteins_max50NA ~ 'Olink',
+    Uniprot %in% ms_proteins_max50NA & Uniprot %in% olink_proteins_max50NA ~ 'Both',
+    !(Uniprot %in% ms_proteins_max50NA | Uniprot %in% olink_proteins_max50NA) ~ 'Not detected')) %>% 
+  mutate(Platform = factor(Platform, levels = c('Both', 'MS', 'Olink', 'Not detected')))
+
+
+conc_prop_max50NA |>     
+  ggplot.histogram(Blood.conc.ngmL, Fill_var = Platform, breaks = 10^(seq(-3, 8, 0.5)),
+                   position = position_fill(reverse = T), median_line = F,
+                   median_text = F, alpha = 0.9) +
+  scale_x_continuous(trans = 'log10', expand = expansion(c(0,0.01)), 
+                     breaks = 10^(seq(-3, 8, 1)),
+                     labels = log10_format()) +
+  scale_y_continuous(expand = expansion(c(0,0.01))) +
+  labs(title = '', x = 'Concentration in blood (ng/mL)',
+       y = 'Proportion of plasma proteins') +
+  scale_color_manual(values = c('Not detected' = TDP_palette[[7]],
+                                'Both' = TDP_palette[[13]],
+                                TDP_palette[c(1,4)]),
+                     aesthetics = c('color', 'fill')) +
+  theme_publ()
+
+```
+
+```{r}
+
+ggsave(filename = 'HPA_bloodConc_plasmaProteomeCoverage_max50NA.pdf',
+       path = path,
+       width = 6.5,
+       height = 6.5,
+       units = 'cm')
+
+```
+
+

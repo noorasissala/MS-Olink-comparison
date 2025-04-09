@@ -1,0 +1,569 @@
+ ---
+title: "CV analysis"
+author: "Noora Sissala"
+date: "2025-04-07"
+output: html_document
+---
+
+## Read in data
+
+```{r setup}
+
+library(tidyverse)
+library(scales)
+library(ggpubr)
+library(patchwork)
+library(ggpp)
+library(rstatix)
+
+```
+
+```{r}
+
+# Result directory
+path <- 'results/CV_analysis'
+
+if (!dir.exists(path)) {
+  dir.create(path, recursive = TRUE)
+}
+
+source('code/utility_functions.R')
+source('code/plotting_functions.R')
+source('code/CV_analysis_functions.R')
+
+```
+
+
+```{r}
+
+# Read in data
+ms_data_withReplicates <- read_MS_data(withReplicateSamples = TRUE)
+ms_data <- read_MS_data(withReplicateSamples = FALSE)
+
+olink_data_withControls <- read_OlinkExplore_data(withControlSamples = TRUE,
+                                                  withBelowLOD = FALSE, # Remove <LOD values
+                                                  withQCWarning = TRUE,
+                                                  withReplicateAssays = FALSE)
+
+olink_data_withControls_wide <- olink_long_to_wide(
+  olink_data_withControls, 
+  id_cols = 'UniProt')
+
+olink_data <- read_OlinkExplore_data(withControlSamples = FALSE,
+                                     withBelowLOD = FALSE, # Remove <LOD values
+                                     withQCWarning = TRUE,
+                                     withReplicateAssays = FALSE)
+
+olink_data_wide <- olink_long_to_wide(
+  olink_data, 
+  id_cols = 'UniProt')
+
+metadata_ms <- read_metadata(withReplicates = TRUE, samples = 'MS')
+metadata_overlap <- read_metadata(withReplicates = FALSE, samples = 'overlapping')
+
+protein_metadata <- read.csv('data/metadata/protein_metadata.csv') |> 
+  filter(UniProt %in% ms_data$UniProt | OlinkID %in% unique(olink_data$OlinkID))
+
+
+# Load HPA data
+hpa_data <- read.delim('data/processed_data/HPA_v24_clean.txt')
+
+# Get blood concentration data
+conc_data <- hpa_data %>% 
+  filter(!is.na(Blood.conc.ngmL)) %>% 
+  distinct(Uniprot, Blood.conc.ngmL, .keep_all = TRUE) |> 
+  dplyr::select(Uniprot, Blood.conc.ngmL)
+
+
+```
+
+
+## Technical variation
+
+Technical variation in MS and Olink Explore measurements was assessed per protein by calculating coefficients of variation (CV) on duplicate measurements.
+
+### Number of duplicate measurements per protein
+
+```{r, message=FALSE}
+
+ms_duplicates <- metadata_overlap %>% 
+  filter(Duplicate) %>% 
+  pull(Sample.ID)
+
+n_ms <- lapply(ms_duplicates, function(id) {
+  pair_cols <- grep(id, colnames(ms_data_withReplicates), value = TRUE)
+  no_na_in_pair <- rowSums(is.na(ms_data_withReplicates[pair_cols])) == 0
+  data.frame(no_na_in_pair)
+})
+n_ms <- bind_cols(n_ms, .name_repair = 'universal_quiet')
+n_ms <- rowSums(n_ms)
+
+ggplot() +
+  geom_bar(aes(x = n_ms)) +
+  labs(x = 'Number of duplicates per protein (MS)', y = 'Count') +
+  scale_x_continuous(breaks = seq(0, 6, 1))
+
+
+```
+
+```{r}
+
+n_olink <- olink_data_withControls_wide %>% 
+  dplyr::select(contains('Control')) %>% 
+  apply(1, function(x) sum(!is.na(x)))
+n_olink <- ifelse(n_olink == 2, 1, 0)
+
+ggplot() +
+  geom_bar(aes(x = n_olink)) +
+  labs(x = 'Number of duplicates per protein (Olink)', y = 'Count')
+
+
+```
+
+
+### Technical CVs
+
+#### All proteins
+
+```{r}
+
+# Calculate coefficients of variation (CV) on replicate samples
+technical_CVs <- calc_tech_CV(ms_data = ms_data_withReplicates, 
+                              olink_data = olink_data_withControls) %>% 
+  left_join(protein_metadata, by = 'UniProt') %>% 
+  dplyr::select(Platform, UniProt, Gene.Name, Description, Assay, OlinkID, 
+                Panel, Technical.CV, Analyzed)
+
+technical_CVs |> 
+  group_by(Platform) |>
+  summarize(N_analyzed = sum(Analyzed),
+            N_total = n(),
+            Perc_analyzed = N_analyzed/N_total*100)
+
+technical_CVs |> 
+  filter(Analyzed) |> 
+  group_by(Platform) |>
+  summarize(set_to_NA = sum(is.na(Technical.CV)),
+            N_total = n(),
+            Perc_set_to_NA = set_to_NA/N_total*100)
+
+```
+
+```{r}
+
+write.csv(technical_CVs, file = paste0(path, '/technical_CVs.csv'), row.names = FALSE)
+
+```
+
+
+```{r}
+
+technical_CVs <- technical_CVs |>
+  filter(!is.na(Technical.CV))
+
+```
+
+
+```{r}
+
+CV_summary <- technical_CVs %>% 
+  group_summary(summary_var = Technical.CV, Platform)
+
+CV_summary
+
+```
+
+Histogram of technical CVs:
+
+```{r}
+
+
+stat_df <- CV_summary |>  
+  mutate(y = c(49,47),
+         npcy = c(0.95,0.9))
+
+pval <- wilcox.test(Technical.CV ~ Platform, data = technical_CVs)$p.value
+pval_label <- paste('Wilcoxon,', ifelse(pval < 0.001, 'p <0.001', paste('p =', round(pval, 3))))
+
+ggplot(technical_CVs, aes(x = Technical.CV, fill = Platform, color = Platform)) +
+  geom_histogram(aes(y = after_stat(
+    c(count[group==1]/sum(count[group==1]),
+      count[group==2]/sum(count[group==2]))*100)), 
+    position = 'identity', alpha = 0.5, binwidth = 5, boundary = 0) +
+  scale_fill_manual(values = TDP_palette[c(1,4)],
+                    aesthetics = c('color', 'fill')) +
+  labs(x = 'Technical CV (%)', y = 'Proportion of proteins (%)') +
+  theme_publ() +
+  scale_y_continuous(expand = expansion(c(0, 0.05))) +
+  scale_x_continuous(breaks = seq(0,100,10)) +
+    # add point and line for median and IQR
+  geom_point(
+    data = stat_df,
+    mapping = aes(x = Median, y = y, color = Platform),
+    size = 1.5) +
+  geom_segment(
+    data = stat_df,
+    mapping = aes(x = Q1, xend = Q3, color = Platform, y = y),
+    linewidth = 0.5) +
+  # add p.value
+  geom_text_npc(data = data.frame(
+    npcx = 'right', npcy = 0.95, label = pval_label), 
+    mapping = aes(npcx = npcx, npcy = npcy, label = label),
+    inherit.aes = FALSE, size = 6/.pt, hjust = 1)
+
+pval
+
+```
+
+```{r}
+
+ggsave(filename = 'technical_CV_hist.pdf',
+       path = path,
+       width = 8.7,
+       height = 6,
+       units = 'cm')
+
+```
+
+
+Boxplot of technical CVs:
+
+```{r}
+
+ggplot(technical_CVs, aes(x = Platform, y = Technical.CV, fill = Platform)) +
+  geom_violin(alpha = 0.5, lwd = 0.3) +
+  geom_boxplot(size = 0.3, width = 0.3, outlier.size = 0.5, alpha = 0.9) +
+  scale_y_log10(labels = log10_format(),
+                breaks = 10^seq(-2, 3, 1)) +
+  small_logticks('l') +
+  scale_fill_manual(values = TDP_palette[c(1,4)]) +
+  labs(y = 'Technical CV (%)') +
+  theme_publ() +
+  theme(legend.position = 'none',
+        panel.grid.major.y = element_line()) +
+  stat_compare_means(method = 'wilcox.test', size = 6/.pt, label.y = 2.5,
+                     label.x = 1.5, hjust = 0.5)
+
+```
+
+```{r}
+
+ggsave(filename = 'technical_CV_boxplot.pdf',
+       path = path,
+       width = 8.7,
+       height = 6,
+       units = 'cm')
+
+```
+
+
+Bar plot of technical CV intervals:
+
+```{r}
+
+intervals <- c('0-5', '>5-10', '>10-15', '>15-20', '>20-50', '>50-100', '>100')
+
+N_total <- technical_CVs |> 
+  filter(!is.na(Technical.CV)) |> 
+  count(Platform) |> 
+  dplyr::rename(N.total = n)
+
+CV_per_interval <- technical_CVs |> 
+  filter(!is.na(Technical.CV)) |>
+  group_by(Platform) |> 
+  mutate(Interval = cut(Technical.CV, breaks = c(0, 5, 10, 15, 20, 50, 100, Inf),
+                        labels = intervals, right = TRUE, include.lowest = TRUE)) |> 
+  count(Platform, Interval) |> 
+  left_join(N_total) |>
+  mutate(Interval = factor(Interval, levels = intervals),
+         Perc = n/N.total*100,
+         Cumulative = cumsum(Perc))
+
+CV_per_interval |> 
+  ggplot(aes(x = Interval, y = Perc, fill = Platform)) +
+  geom_col(position = 'dodge') +
+  geom_line(aes(y = Cumulative, color = Platform, group = Platform,
+                linetype = '')) +
+    geom_point(aes(y = Cumulative), color = 'grey30', size = 1,
+             stroke = 0.3,
+             shape = 21, show.legend = F) +
+  scale_fill_manual(values = TDP_palette[c(1,4)], aesthetics = c('fill', 'color')) +
+  labs(x = 'Technical CV (%)', y = 'Proportion of proteins (%)', 
+       linetype = 'Cumulative % of proteins') +
+  theme_publ()  +
+  scale_y_continuous(expand = expansion(c(0,0.05))) 
+
+```
+
+```{r}
+
+ggsave(filename = 'technical_CV_intervals_barplot.pdf',
+       path = path,
+       width = 8.7,
+       height = 6,
+       units = 'cm')
+
+```
+
+
+#### Overlapping proteins
+
+```{r}
+
+technical_CVs_overlap <- technical_CVs |> 
+  filter(UniProt %in% intersect(ms_data$UniProt, olink_data$UniProt)) |> 
+  pivot_wider(id_cols = UniProt,
+              names_from = Platform, 
+              values_from = Technical.CV) |> 
+  filter(!is.na(MS) & !is.na(Olink)) |> 
+  pivot_longer(cols = c(MS, Olink),
+                names_to = 'Platform',
+                values_to = 'Technical.CV')
+
+
+stat_df2 <- group_summary(technical_CVs_overlap, Technical.CV, Platform) |>  
+  mutate(y = c(59,57),
+         npcy = c(0.95,0.9))
+
+pval2 <- wilcox.test(Technical.CV ~ Platform, data = technical_CVs_overlap)$p.value
+pval_label2 <- paste('Wilcoxon,', ifelse(pval2 < 0.001, 'p <0.001', paste('p =', round(pval2, 3))))
+
+ggplot(technical_CVs_overlap, aes(x = Technical.CV, fill = Platform, color = Platform)) +
+  geom_histogram(aes(y = after_stat(
+    c(count[group==1]/sum(count[group==1]),
+      count[group==2]/sum(count[group==2]))*100)), 
+    position = 'identity', alpha = 0.5, binwidth = 5, boundary = 0) +
+  scale_fill_manual(values = TDP_palette[c(1,4)],
+                    aesthetics = c('color', 'fill')) +
+  labs(x = 'Technical CV (%)', y = 'Proportion of proteins (%)') +
+  theme_publ() +
+  scale_y_continuous(expand = expansion(c(0, 0.05))) +
+  scale_x_continuous(breaks = seq(0,100,10)) +
+    # add point and line for median and IQR
+  geom_point(
+    data = stat_df2,
+    mapping = aes(x = Median, y = y, color = Platform),
+    size = 1.5) +
+  geom_segment(
+    data = stat_df2,
+    mapping = aes(x = Q1, xend = Q3, color = Platform, y = y),
+    linewidth = 0.5) +
+  # add p.value
+  geom_text_npc(data = data.frame(
+    npcx = 'right', npcy = 0.95, label = pval_label2), 
+    mapping = aes(npcx = npcx, npcy = npcy, label = label),
+    inherit.aes = FALSE, size = 6/.pt, hjust = 1)
+
+pval2
+
+
+```
+
+```{r}
+
+ggsave(filename = 'technical_CV_hist_overlappingProteins.pdf',
+       path = path,
+       width = 8.7,
+       height = 6,
+       units = 'cm')
+
+```
+
+
+
+## Technical CVs vs. concentration in blood
+
+
+Calculate concentration intervals:
+
+```{r}
+
+conc_intervals <- conc_data |> 
+  filter(Uniprot %in% protein_metadata$UniProt) |>
+  pull(Blood.conc.ngmL) |>
+  quantile(probs = c(0, 0.25, 0.5, 0.75, 1), na.rm = T)
+
+interval_labels <- c('1st quantile', '2nd quantile', '3rd quantile', '4th quantile')
+
+CV_per_conc <- technical_CVs |> 
+  filter(!is.na(Technical.CV)) |> 
+  left_join(conc_data, by = join_by(UniProt == Uniprot)) |>
+  filter(!is.na(Blood.conc.ngmL)) |> 
+  mutate(Conc.interval = cut(
+    Blood.conc.ngmL, conc_intervals, include.lowest = T, labels = interval_labels),
+    Conc.interval = factor(Conc.interval, levels = interval_labels))
+
+```
+
+
+Plot boxplots:
+
+```{r}
+
+
+stat_test <- CV_per_conc |> 
+  group_by(Platform) |>
+  wilcox_test(Technical.CV ~ Conc.interval, p.adjust.method = 'fdr',
+              comparisons = list(
+                c('1st quantile', '2nd quantile'), c('2nd quantile', '3rd quantile'),
+                c('3rd quantile', '4th quantile'))) |> 
+  add_xy_position(y.trans = log10)
+
+CV_per_conc |> 
+  ggplot.jitterbox(Conc.interval, Technical.CV) +
+  facet_wrap(~Platform, scales = 'free_x', axes = 'all') +
+  scale_y_log10(labels = log10_format()) +
+  scale_fill_manual(values = brewer.pal(9, 'YlGnBu')[c(8:4)],
+                    aesthetics = c('fill', 'color')) +
+  small_logticks('l') +
+  labs(x = 'Concentration in blood (ng/mL)', y = 'Technical CV (%)') +
+  theme_publ() +
+  stat_pvalue_manual(stat_test, size = 6/.pt, tip.length = 0.01, inherit.aes = F,
+                     step.increase = 0.02, bracket.nudge.y = 0.1, 
+                     step.group.by = 'Platform', label = 'p.adj.signif') +
+  theme(legend.position = 'none')
+
+
+```
+
+```{r}
+
+ggsave(filename = 'technicalCV_bloodConc_boxplot.pdf',
+       path = path,
+       width = 18.3,
+       height = 7.5,
+       units = 'cm')
+
+```
+
+Scatterplot:
+
+```{r}
+
+ggplot.corrplot(CV_per_conc, Blood.conc.ngmL, Technical.CV) +
+  scale_x_log10() +
+  scale_y_log10() +
+  small_logticks('bl') +
+  facet_wrap(~Platform, scales = 'free_x', axes = 'all') +
+  labs(x = 'Concentration in blood (ng/mL)', y = 'Technical CV (%)',
+       title = 'Technical CV vs. concentration in blood')
+
+```
+
+
+
+## Technical CVs vs missing values
+
+
+Calculate the proportion of missing values per protein:
+
+```{r}
+
+intervals <- c('0', '(0,25]', '(25,50]', '(50,75]', '(75,100]')
+
+# Below LOD in Olink data
+below_LOD <- olink_data %>%
+  group_by(UniProt) %>%
+  summarize(N.missing = sum(is.na(NPX)),
+            Perc.missing = N.missing/n()*100,
+            N = n(),
+            Interval = as.character(cut(
+              Perc.missing, breaks = seq(-25,100,25), labels = intervals, 
+              include.lowest = F, right = T)),
+            Interval = factor(Interval, levels = intervals))
+
+# Missing values in MS data
+ms_NAs <- ms_data_withReplicates %>%
+  pivot_longer(cols = -UniProt,
+               values_to = 'Value',
+               names_to = 'Sample.ID') %>%
+  group_by(UniProt, .drop = FALSE) %>%
+  summarize(N.missing = sum(is.na(Value)),
+            Perc.missing = sum(is.na(Value))/n()*100,
+            N = n(),
+            Interval = as.character(cut(
+              Perc.missing, breaks = seq(-25,100,25), labels = intervals, 
+              include.lowest = F, right = T)),
+            Interval = factor(Interval, levels = intervals))
+
+# Merge data
+CV_per_belowLOD <- technical_CVs |> 
+  filter(Platform == 'Olink', !is.na(Technical.CV)) |>
+  left_join(below_LOD, by = 'UniProt') 
+
+CV_per_NAs <- technical_CVs |> 
+  filter(Platform == 'MS', !is.na(Technical.CV)) |>
+  left_join(ms_NAs, by = 'UniProt')
+
+CV_per_missing <- bind_rows(CV_per_belowLOD, CV_per_NAs)
+
+```
+
+
+Plot boxplots:
+
+```{r}
+
+# Test for differences in CVs between intervals
+stat_test1 <- CV_per_missing |> 
+  filter(Platform == 'MS') |> 
+  group_by(Platform) |>
+  wilcox_test(Technical.CV ~ Interval, p.adjust.method = 'fdr',
+              comparisons = list(
+                c('0', '(0,25]'), c('(0,25]', '(25,50]'), c('(25,50]', '(50,75]'))) |> 
+  add_xy_position(y.trans = log10)
+
+stat_test2 <- CV_per_missing |>
+  filter(Platform == 'Olink') |>
+  group_by(Platform) |>
+  wilcox_test(Technical.CV ~ Interval, p.adjust.method = 'fdr',
+              comparisons = list(
+                c('0', '(0,25]'), c('(0,25]', '(25,50]'), c('(25,50]', '(50,75]'), c('(50,75]', '(75,100]'))) |> 
+  add_xy_position(y.trans = log10)
+
+stat_test <- bind_rows('MS' = stat_test1, 'Olink' = stat_test2, .id = 'Platform')
+
+# Plot boxplots
+CV_per_missing |> 
+  ggplot.jitterbox(Interval, Technical.CV, Color_var = Interval) +
+  facet_wrap(~Platform, scales = 'free_x', axes = 'all') +
+  scale_y_log10(labels = log10_format()) +
+  scale_fill_manual(values = brewer.pal(9, 'YlGnBu')[c(8:4)],
+                    aesthetics = c('fill', 'color')) +
+  small_logticks('l') +
+  labs(x = 'Proportion of missing values (%)', y = 'Technical CV (%)') +
+  theme_publ() +
+  stat_pvalue_manual(stat_test, size = 6/.pt, tip.length = 0.01, inherit.aes = F,
+                     step.increase = 0.02, bracket.nudge.y = 0.1, step.group.by = 'Platform') +
+  theme(legend.position = 'none')
+
+```
+
+```{r}
+
+ggsave(filename = 'technicalCV_vs_missingValues.pdf',
+       path = path,
+       width = 18.3,
+       height = 7.5,
+       units = 'cm')
+
+```
+
+
+Scatterplot:
+
+```{r, fig.width=8, fig.height=4}
+
+CV_per_missing |> 
+  ggplot.corrplot(Perc.missing, Technical.CV) +
+  scale_y_log10() +
+  small_logticks('l') +
+  facet_wrap(~Platform, scales = 'free_x', axes = 'all') +
+  labs(x = 'Proportion of missing values (%)', y = 'Technical CV (%)',
+       title = 'Technical CV vs. missing values')
+
+
+```
+
+
+
