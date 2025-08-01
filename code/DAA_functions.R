@@ -20,12 +20,27 @@ rowwise.t.test <- function(data, test_grp, ref_grp) {
                    )}, 
                test_grp = test_grp, ref_grp = ref_grp)
   
-  res <- as.data.frame(do.call(rbind.data.frame, res))
-  res$adj.p <- p.adjust(res$p.value, method = 'fdr')
-  res$variable <- rownames(data)
-  res <- dplyr::select(res, variable, estimate:p.value, adj.p, parameter:alternative)
-  colnames(res)[2:4] <- c('log2FC', 'mean.testGrp', 'mean.refGrp')
+  n_df <- apply(data, 1, 
+                 function(x, test_grp, ref_grp) {
+                   n_test <- sum(!is.na(x[test_grp]))
+                   n_ref <- sum(!is.na(x[ref_grp]))
+                   c(n.testGrp = n_test, n.refGrp = n_ref, n.total = n_test + n_ref)
+                 }, 
+                 test_grp = test_grp, ref_grp = ref_grp) |> 
+    t() |> 
+    as.data.frame()
+  
+  res <- bind_rows(res) |> 
+    mutate(adj.p = p.adjust(p.value, method = 'fdr'),
+           variable = rownames(data)) |>
+    dplyr::select(variable, estimate:p.value, adj.p, parameter:alternative) |> 
+    dplyr::rename(log2FC = estimate,
+                  mean.testGrp = estimate1,
+                  mean.refGrp = estimate2) |> 
+    bind_cols(n_df) |> 
+    relocate(n.testGrp, n.refGrp, n.total, .after = mean.refGrp)
   
   return(res)
   
 }
+

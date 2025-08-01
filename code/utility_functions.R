@@ -104,14 +104,6 @@ olink_long_to_wide <- function(NPX_data, id_cols = c()) {
   
 }
 
-olink_proteins_per_panel <- function(NPX_data) {
-  
-  proteins_per_panel <- NPX_data |>
-    group_by(Panel) |>
-    summarise(total.proteins = length(unique(OlinkID))) |>
-    as.data.frame()
-}
-
 na_omit_prop <- function(x, max_na_prop = 0, ignore_cols = NULL) {
   
   if (is.null(ignore_cols)) {

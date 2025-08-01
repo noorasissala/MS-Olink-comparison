@@ -12,12 +12,14 @@ output: html_document
 Comparison with MS-Olink correlations from:
 
 - "Multiplatform Approach for Plasma Proteomics: Complementarity of Olink Proximity Extension Assay Technology to Mass Spectrometry-Based Protein Profiling" (Petrera et al., 2021) (DDA MS, DIA MS, and Olink data)
-- - "Multi-platform proteomic analysis of Alzheimer’s disease cerebrospinal fluid and plasma reveals network biomarkers associated with proteostasis and the matrisome" (Dammer et al., 2022) (MS, Olink, and SomaScan data)
+- "Multi-platform proteomic analysis of Alzheimer’s disease cerebrospinal fluid and plasma reveals network biomarkers associated with proteostasis and the matrisome" (Dammer et al., 2022) (MS, Olink, and SomaScan data)
+- "The Current Landscape of Plasma Proteomics: Technical Advances, Biological Insights, and Biomarker Discovery" (Kirsher et al., 2025, preprint). (MS, Olink, and SomaScan data)
 
 
 Comparison with MS-SomaScan correlations from:
 
 - Dammer et al.
+- Kirsher et al.
 
 
 Comparison with Olink-SomaScan correlations from:
@@ -30,10 +32,11 @@ Comparison with Olink-SomaScan correlations from:
 - "Comparison of Proteomic Assessment Methods in Multiple Cohort Studies" (Raffield et al., 2020),
 - "Dual-platform affinity proteomics identifies links between the recurrence of ovarian carcinoma and proteins released into the tumor microenvironment" (Finkernagel et al., 2019),
 - "Stability and reproducibility of proteomic profiles in epidemiological studies: comparing the Olink and SOMAscan platforms" (Haslam et al., 2022).
+- Kirsher et al. 
+- "Correlations Within and Between Highly Multiplexed Proteomic Assays of Human Plasma" (Rooney et al., 2025)
 
 
-Analysis of confidence tiers from:
-- Eldjarn et al.,
++ Analysis of our MS-Olink correlations by confidence tiers from Eldjarn et al., which were based on Olink-SomaScan correlations and the presence of pQTLs.
 
 
 ## Load data
@@ -72,7 +75,14 @@ if (!dir.exists(path)) {
 
 # Load correlations from this study
 my_cors <- read.csv('results/correlation_analysis/MS-Olink_protein_cor_table.csv') |> 
-  dplyr::rename(Correlation = Correlation_Spearman)
+  dplyr::rename(Correlation_Sissala = Correlation_Spearman,
+                P.value_Sissala = P.value_Spearman,
+                Adj.p.value_Sissala = Adj.p.value_Spearman,
+                N_Sissala = N,
+                Cor.interval_Sissala = Cor.interval_Spearman) |> 
+  dplyr::select(UniProt, Gene.Name, OlinkID, Description, contains('Sissala')) |> 
+  dplyr::relocate(N_Sissala, .after = Correlation_Sissala) |> 
+  mutate(Cor.method_Sissala = 'Spearman')
 
 # Petrera et al.
 petrera_olink_ann <- read_xlsx('data/external_data/pr0c00641_si_003.xlsx', 
@@ -105,8 +115,10 @@ petrera_NPX <- petrera_NPX[-1,]
 rownames(petrera_NPX) <- NULL
 
 petrera_olink <- bind_cols(petrera_olink_ann, petrera_LOD, petrera_NPX) |>  
-  # OlinkIDs of duplicate assays that were removed in the paper
-  filter(!OlinkID %in% c('OID00947', 'OID00666', 'OID01009', 'OID00684'))
+  # Exclude OlinkIDs that were excluded in the original paper
+  filter(!OlinkID %in% c('OID00947', 'OID00666', 'OID01009', 'OID00684')) |> 
+  mutate(across(starts_with('PM'), as.numeric))
+  
 
 petrera_dda_samples <- read_xlsx('data/external_data/pr0c00641_si_004.xlsx',
                                  sheet = 2, range = 'H1:FY2', col_names = F,
@@ -118,15 +130,38 @@ petrera_dda_samples <- petrera_dda_samples[-1,]
 rownames(petrera_dda_samples) <- NULL
 
 petrera_dda <- read_xlsx('data/external_data/pr0c00641_si_004.xlsx',
-                         sheet = 2, skip = 2, .name_repair = 'universal_quiet') |> 
+                         sheet = 1, skip = 4, .name_repair = 'universal_quiet') |> 
+  dplyr::select(1:6, contains('Normalized')) |> 
   dplyr::rename_with(\(x) str_extract(x, '(?<=\\.Normalized\\.\\.\\.).*(?=\\.\\.Sample)'),
                      contains('Sample', ignore.case = F)) |> 
   mutate(across(starts_with('F'), log2))  # log2-transform values
+
 colnames(petrera_dda) <- ifelse(
   colnames(petrera_dda) %in% petrera_dda_samples$`ID (PD2.3)`,
   petrera_dda_samples$`Sample ID`[match(colnames(petrera_dda), petrera_dda_samples$`ID (PD2.3)`)],
   colnames(petrera_dda))
 
+petrera_dda_norm <- petrera_dda |> 
+  # median-center the DDA-MS data
+  mutate(across(starts_with('PM'),  function(x) x - median(x, na.rm = T))) 
+
+# Calculate MS-Olink correlations for Petrera et al.
+# match proteins between technologies by UniProt ID
+# calculate Spearman correlations
+
+source('code/correlation_analysis_functions.R')
+
+petrera_dda_olink_cors <- cor.test.df(
+  dplyr::select(petrera_dda, Accession, starts_with('PM')),
+  dplyr::select(petrera_olink, `Uniprot ID`, OlinkID, starts_with('PM')),
+  match_by = c('Accession', 'Uniprot ID'),
+  cor_type = 'rowwise', cor_method = 'spearman',
+  cols_to_keep = c('OlinkID')) |> 
+  dplyr::rename(UniProt = Accession, 
+                Correlation_Previous.study = Correlation,
+                P.value_Previous.study = P.value,
+                Adj.p.value_Previous.study = Adj.p.value,
+                N_Previous.study = N) 
 
 # Dammer et al.
 
@@ -134,7 +169,6 @@ dammer_soma_olink_cors <- read_xlsx(
   'data/external_data/13195_2022_1113_MOESM2_ESM.xlsx',
   sheet = '13.Olink.SomaScan.Corr.Plasma', skip = 3,
   .name_repair = 'universal_quiet') |> 
-  dplyr::select(-1) |> 
   dplyr::rename(Olink = OlinkAssay,
                 SomaScan = SomaAssay) |>
   separate_wider_delim(cols = c(Olink, SomaScan),
@@ -144,7 +178,13 @@ dammer_soma_olink_cors <- read_xlsx(
   separate_wider_delim(cols = SomaScan.UniProt,
                        names = c('SomaScan.UniProt', 'SomaID'),
                        delim = '^',
-                       too_few = 'align_start')
+                       too_few = 'align_start') |> 
+  filter(SomaScan.UniProt == Olink.UniProt) |> 
+  separate_wider_delim(SomaID, delim = '@', names = c('SomaID', 'SomaScan.SeqID')) |>
+  dplyr::rename(UniProt = Olink.UniProt,
+                Correlation_Previous.study = all.cor,
+                P.value_Previous.study = all.p,
+                N_Previous.study = all.nObs)
   
 dammer_ms_olink_cors <- read_xlsx(
   'data/external_data/13195_2022_1113_MOESM2_ESM.xlsx',
@@ -156,7 +196,12 @@ dammer_ms_olink_cors <- read_xlsx(
   separate_wider_delim(cols = c(Olink, MS),
                        names = c('Gene.Name', 'UniProt'),
                        names_sep = '.',
-                       delim = '|')
+                       delim = '|') |> 
+  filter(MS.UniProt == Olink.UniProt) |> 
+  dplyr::rename(UniProt = Olink.UniProt,
+                Correlation_Previous.study = all.cor,
+                P.value_Previous.study = all.p,
+                N_Previous.study = all.nObs)
 
 dammer_ms_soma_cors <- read_xlsx(
   'data/external_data/13195_2022_1113_MOESM2_ESM.xlsx',
@@ -172,679 +217,637 @@ dammer_ms_soma_cors <- read_xlsx(
   separate_wider_delim(cols = SomaScan.UniProt,
                        names = c('SomaScan.UniProt', 'SomaID'),
                        delim = '^',
-                       too_few = 'align_start')
+                       too_few = 'align_start') |> 
+  filter(SomaScan.UniProt == MS.UniProt) |> 
+  separate_wider_delim(SomaID, delim = '@', names = c('SomaID', 'SomaScan.SeqID')) |>
+  dplyr::rename(UniProt = MS.UniProt,
+                Correlation_Previous.study = all.cor,
+                P.value_Previous.study = all.p,
+                N_Previous.study = all.nObs)
 
 # Nilsson et al.
 nilsson_cors <- read_xlsx(
   'data/external_data/004_corr_shared.xlsx',
   .name_repair = 'universal_quiet') |> 
   mutate(UniProt = str_remove(UnitedIDs, '.+_'),
-         .after = 1)
+         .after = 1) |> 
+  dplyr::rename(Correlation_Previous.study = Corr,
+                P.value_Previous.study = p,
+                Adj.p.value_Previous.study = p_adjust) |> 
+  mutate(N_Previous.study = 16) # proteins with missing values were removed, so N is 16 for all proteins
 
 # Katz et al
 katz_cors <- read_xlsx('data/external_data/sciadv.abm5164_tables_s1_to_s6.xlsx',
                        sheet = 'Table S2', skip = 1,
                        .name_repair = 'universal_quiet') %>% 
   filter(!is.na(Soma.Target) & !is.na(Olink.Target)) |> 
-  dplyr::rename(Cognate_Soma = Cognate...18, 
-                Cis_Soma = Cis...19,
-                Cognate_Olink = Cognate...26,
-                Cis_Olink = Cis...27)
-
+  dplyr::rename(UniProt = UniProt.x,
+                Correlation_Previous.study = rho,
+                P.value_Previous.study = p...11,
+                SomaScan.SeqID = SomamerId,
+                SomaID = SomaId) |> 
+  mutate(N_Previous.study = 568) # assuming that values <LOD were retained, there were no missing values, so N is 568 for all proteins
+                
 # Eldjarn et al
 eldjarn_cors <- read_xlsx('data/external_data/41586_2023_6563_MOESM3_ESM.xlsx',
                           sheet = 'ST6_assay_correlations', skip = 3, 
                           .name_repair = 'universal_quiet', col_types = 'text') |> 
   mutate(across(7:17, as.numeric)) |> 
-  filter(!is.na(olink_smpnorm_corr))
+  dplyr::rename(UniProt = uniprot,
+                Correlation_Previous.study = olink_smpnorm_corr,
+                P.value_Previous.study = olink_smpnorm_pval,
+                SomaScan.SeqID = seqid,
+                OlinkID = oid) |> 
+  mutate(N_Previous.study = 1514)  # assuming that values <LOD were retained, there were no missing values, so N is 1514 for all proteins
 
 eldjarn_tiers <- read_xlsx('data/external_data/41586_2023_6563_MOESM3_ESM.xlsx',
                           sheet = 'ST29_protein_classification', skip = 2, 
                           .name_repair = 'universal_quiet', col_types = 'text') |> 
   filter(Targeted.Olink == 'Y', Targeted.Soma == 'Y') |> 
-  mutate(olink.smp.corr = as.numeric(olink.smp.corr))
+  mutate(olink.smp.corr = as.numeric(olink.smp.corr)) |>
+  dplyr::rename(Correlation_Eldjarn = olink.smp.corr,
+                P.value_Eldjarn = olink.smp.pval,
+                SomaScan.SeqID = SeqId,
+                cis.pQTL.olink_Eldjarn = cis.pQTL.olink,
+                cis.pQTL.soma_Eldjarn = cis.pQTL.soma,
+                confidence.tier_Eldjarn = confidence.tier) |>
+  dplyr::select(UniProt, OlinkID, SomaScan.SeqID,
+                Correlation_Eldjarn, P.value_Eldjarn,
+                cis.pQTL.olink_Eldjarn, cis.pQTL.soma_Eldjarn,
+                confidence.tier_Eldjarn)
+                
  
 
 # Pietzner et al
 pietzner_cors <- read_xlsx('data/external_data/41467_2021_27164_MOESM5_ESM.xlsx',
                            skip = 2, .name_repair = 'universal_quiet') |> 
   filter(!is.na(SomaScan.SeqID) & !is.na(OlinkID)) |> 
-  dplyr::rename(Correlation.norm = Spearman.correlation.coefficient..normalised.,
-                Correlation.nonnorm = Spearman.correlation.coefficient..non.normalised.) |> 
-  mutate(across(1:2, \(x) str_remove(x, "^\\'")))
+  dplyr::rename(UniProt = UniprotID,
+                Correlation_Previous.study = Spearman.correlation.coefficient..normalised.) |> 
+  mutate(N_Previous.study = 485) # values <LOD were retained, so there were no missing values and N is 485 for all proteins
+                
 
 # Rooney et al
-rooney_cors <- read_xlsx(
+rooney2023_cors <- read_xlsx(
   'data/external_data/02 Proteomics validation Supp 20220815 SF1 updated.xlsx',
   sheet = 'ST3 soma v olink', range = 'A2:AN419',
   .name_repair = 'universal_quiet') |> 
-  mutate(across(15:16, as.numeric)) |> # NAs introduced due to 3 values that are "NA"
-  filter(!is.na(SOMAmer.SeqID) & !is.na(OlinkID)) |> 
-  dplyr::rename(Correlation = Correlation.SomaScan.vs.Olink,
-                Correlation.outliers.excl = Correlation.SomaScan.vs.Olink.outliers.excluded)
+  mutate(across(15:16, as.numeric)) |> 
+  filter(!is.na(SOMAmer.SeqID) & !is.na(OlinkID),
+         UniprotID != 'NA') |> 
+  dplyr::rename(UniProt = UniprotID,
+                Correlation_Previous.study = Correlation.SomaScan.vs.Olink,
+                P.value_Previous.study = P.value.Correlation.SomaScan.vs.Olink,
+                SomaScan.SeqID = SOMAmer.SeqID) |> 
+  mutate(N_Previous.study = 427) # values <LOD were imputed, so there were no missing values and N is 427 for all proteins
+
+
+# Rooney et al (2025)
+rooney2025_cors <- read_xlsx(
+  'data/external_data/03 Supplemental Tables 20241010 R3.xlsx',
+  sheet = 'ST6', skip = 2, na = 'NA',
+  .name_repair = 'universal_quiet') |> 
+  filter(UniprotID.Soma.11k == UniprotID.Olink) |> 
+  dplyr::rename(UniProt = UniprotID.Soma.11k,
+                Correlation_Previous.study = Soma.vs.Olink.Spearman.s.r,
+                SomaScan.SeqID = SeqID) |> 
+  mutate(N_Pevious.study = 102) # values <LOD were retained, so there were no missing values and N is 102 for all proteins)
 
 # Raffield et al.
 raffield_cors <- read_xlsx(
-  'data/external_data/pmic13292-sup-TableS9.xlsx')
+  'data/external_data/pmic13292-sup-TableS9.xlsx') |> 
+  dplyr::rename(Correlation_Previous.study = rs,
+                N_Previous.study = n,
+                SomaID = SomaId)
 
 # Finkeragel et al.
 finkernagel_cors <- read_xlsx(
   'data/external_data/thnov09p6601s1.xlsx',
   sheet = 'Table S5', .name_repair = 'universal_quiet') |> 
-  dplyr::rename(Gene.Name = ...1)
+  dplyr::rename(Gene.Name = ...1,
+                Correlation_Previous.study = Spearman.rho) |> 
+  mutate(N_Previous.study = 50) # assuming that values <LOD were retained, there were no missing values, so N is 50 for all proteins
 
 # Haslam et al.
 haslam_cors <- read_xlsx(
   'data/external_data/pmic13529-sup-0001-tabless1-s17.xlsx',
   sheet = 'Supplemental Table S12', .name_repair = 'universal_quiet',
-  skip = 2)
+  skip = 2) |> 
+  dplyr::rename(UniProt = UniprotID,
+                Correlation_Previous.study = r,
+                SomaID = SomaId,
+                SomaScan.SeqID = Sequence.ID,
+                OlinkID = FIELDNAMES) |> 
+  mutate(N_Previous.study = NA_real_) # <LOD values were removed, so there are missing values, but N is not given
+
+# Kirsher et al.
+kirsher_cors <- read_xlsx(
+  'data/external_data/media-1.xlsx',
+  sheet = 'S4 - Interplatform Correlation', 
+  .name_repair = 'universal_quiet',
+  skip = 1) |> 
+  mutate(Spearman.Rho = as.numeric(Spearman.Rho),
+         N_Previous.study = 78) |> # vaues <LOD were retained, so there are no missing values and N is 78 for all proteins
+  dplyr::rename(Correlation_Previous.study = Spearman.Rho)
 
 ```
+
+```{r}
+
+cor_tables <- list(
+  'Petrera et al.' = petrera_dda_olink_cors,
+  'Dammer et al. (MS-Olink)' = dammer_ms_olink_cors,
+  'Dammer et al. (MS-SomaScan)' = dammer_ms_soma_cors,
+  'Dammer et al. (Olink-SomaScan)' = dammer_soma_olink_cors,
+  'Nilsson et al.' = nilsson_cors,
+  'Katz et al.' = katz_cors,
+  'Eldjarn et al.' = eldjarn_cors,
+  'Pietzner et al.' = pietzner_cors,
+  'Rooney et al. (2023)' = rooney2023_cors,
+  'Rooney et al. (2025)' = rooney2025_cors,
+  'Raffield et al.' = raffield_cors,
+  'Finkernagel et al.' = finkernagel_cors,
+  'Haslam et al.' = haslam_cors,
+  'Kirsher et al. (MS HAP Depletion - Olink 3K)' = kirsher_cors |> 
+    filter(Platform_1 == 'MS - HAP Depletion', Platform_2 == 'Olink 3K'),
+  'Kirsher et al. (MS HAP Depletion - Olink 5K)' = kirsher_cors |>
+    filter(Platform_1 == 'MS - HAP Depletion', Platform_2 == 'Olink 5K'),
+  'Kirsher et al. (MS HAP Depletion - SomaScan 7K)' = kirsher_cors |>
+    filter(Platform_1 == 'MS - HAP Depletion', Platform_2 == 'SomaScan 7K'),
+  'Kirsher et al. (MS HAP Depletion - SomaScan 11K)' = kirsher_cors |>
+    filter(Platform_1 == 'MS - HAP Depletion', Platform_2 == 'SomaScan 11K'),
+  'Kirsher et al. (Olink 3K - SomaScan 7K)' = kirsher_cors |>
+    filter(Platform_1 == 'Olink 3K', Platform_2 == 'SomaScan 7K'),
+  'Kirsher et al. (Olink 3K - SomaScan 11K)' = kirsher_cors |>
+    filter(Platform_1 == 'Olink 3K', Platform_2 == 'SomaScan 11K'),
+  'Kirsher et al. (Olink 5K - SomaScan 7K)' = kirsher_cors |>
+    filter(Platform_1 == 'Olink 5K', Platform_2 == 'SomaScan 7K'),
+  'Kirsher et al. (Olink 5K - SomaScan 11K)' = kirsher_cors |>
+    filter(Platform_1 == 'Olink 5K', Platform_2 == 'SomaScan 11K')) |> 
+  map(\(x) dplyr::select(
+    x, any_of(c('UniProt', 'Gene.Name', 'Correlation_Previous.study', 'N_Previous.study',
+                'P.value_Previous.study', 'Adj.p.value_Previous.study', 'SomaID', 
+                'SomaScan.SeqID', 'OlinkID', 'Platform_1', 'Platform_2',
+                'Platform_1_Analyte', 'Platform_2_Analyte'))))
+
+comparisons <- tibble(
+  Study = names(cor_tables),
+  Comparison = case_when(
+    Study %in% c('Petrera et al.', 'Dammer et al. (MS-Olink)', 'Nilsson et al.', 
+                 'Kirsher et al. (MS HAP Depletion - Olink 3K)', 
+                 'Kirsher et al. (MS HAP Depletion - Olink 5K)') ~ 'MS-Olink',
+    Study %in% c('Dammer et al. (MS-SomaScan)', 
+                 'Kirsher et al. (MS HAP Depletion - SomaScan 7K)',
+                 'Kirsher et al. (MS HAP Depletion - SomaScan 11K)') ~ 'MS-SomaScan',
+    Study %in% c('Dammer et al. (Olink-SomaScan)', 'Katz et al.', 'Eldjarn et al.',
+                 'Pietzner et al.', 'Rooney et al. (2023)', 'Rooney et al. (2025)',
+                 'Raffield et al.', 'Finkernagel et al.', 'Haslam et al.',
+                 'Kirsher et al. (Olink 3K - SomaScan 7K)', 
+                 'Kirsher et al. (Olink 3K - SomaScan 11K)',
+                 'Kirsher et al. (Olink 5K - SomaScan 7K)',
+                 'Kirsher et al. (Olink 5K - SomaScan 11K)') ~ 'Olink-SomaScan'
+  )
+)
+
+cor_table <- cor_tables |>
+  bind_rows(.id = 'Study') |>
+  # Get SomaScan.SeqID and OlinkID for Kirsher correlations
+  mutate(
+    OlinkID = case_when(
+      str_detect(Platform_1, 'Olink') ~ Platform_1_Analyte,
+      str_detect(Platform_2, 'Olink') ~ Platform_2_Analyte,
+      TRUE ~ OlinkID
+    ),
+    
+    SomaScan.SeqID = case_when(
+      str_detect(Platform_1, 'SomaScan') ~ Platform_1_Analyte,
+      str_detect(Platform_2, 'SomaScan') ~ Platform_2_Analyte,
+      TRUE ~ SomaScan.SeqID
+    )
+  ) |>
+  left_join(comparisons, by = 'Study') |>
+  mutate(Cor.interval_Previous.study = cor_intervals(Correlation_Previous.study),
+         Cor.method_Previous.study = ifelse(
+           str_detect(Study, 'Dammer'), 'Pearson', 'Spearman')) |>
+  filter(!is.na(Correlation_Previous.study)) |> 
+  left_join(my_cors, by = 'UniProt', suffix = c('_Previous.study', '_Sissala')) |> 
+  left_join(my_cors, by = join_by(Gene.Name_Previous.study == Gene.Name), suffix = c('', '_x')) |> 
+  mutate(Correlation_Sissala = coalesce(Correlation_Sissala, Correlation_Sissala_x),
+         P.value_Sissala = coalesce(P.value_Sissala, P.value_Sissala_x),
+         Adj.p.value_Sissala = coalesce(Adj.p.value_Sissala, Adj.p.value_Sissala_x),
+         N_Sissala = coalesce(N_Sissala, N_Sissala_x),
+         Cor.interval_Sissala = coalesce(Cor.interval_Sissala, Cor.interval_Sissala_x),
+         Description = coalesce(Description, Description_x),
+         UniProt = coalesce(UniProt, UniProt_x),
+         Gene.Name = coalesce(Gene.Name_Previous.study, Gene.Name_Sissala)) |>
+  dplyr::select(Study, Comparison, UniProt, Gene.Name, Description, SomaID,
+                SomaScan.SeqID, contains('OlinkID'), everything(),
+                -contains('_x', ignore.case = FALSE), -Gene.Name_Previous.study, 
+                -Gene.Name_Sissala, -contains('Platform'), -OlinkID)
+  
+
+```
+
+Summary of number of comparisons, overlapping proteins between technologies, and overlapping proteins with the present study:
+
+```{r}
+
+study_summary <- cor_table |> 
+  group_by(Study, Comparison) |>
+  summarise(
+    Total.N = n(),
+    Unique.proteins = if ('Finkernagel et al.' %in% cur_group()$Study) {
+      n_distinct(Gene.Name)
+    } else {
+      n_distinct(UniProt)
+    },
+    Overlap.with.present.study = length(intersect(my_cors$UniProt, UniProt)),
+    .groups = 'drop') |> 
+  arrange(Comparison, desc(Unique.proteins))
+
+
+study_summary
+
+```
+
+
+For proteins with several cross-platform correlations due to multiple Olink/SomaScan assays targeting the same protein, we calculated the cross-platform correlation as the median of individual correlations between the different assays. 
+
+```{r}
+
+cor_table_summarized <- cor_table |> 
+  filter(Study != 'Finkernagel et al.') |> # skip study matched by gene name, has one correlation per gene
+  group_by(Study, Comparison, UniProt) |> 
+  summarize(Correlation_Previous.study = median(Correlation_Previous.study, na.rm = TRUE),
+            Correlation_Sissala = unique(Correlation_Sissala)) |> 
+  bind_rows(filter(cor_table, Study == 'Finkernagel et al.')) # put back Finkernagel et al. correlations
+
+```
+
+```{r}
+
+# Add median correlation to summary table
+study_medians <- cor_table_summarized |> 
+  group_by(Study, Comparison) |> 
+  summarise(Median.correlation = median(Correlation_Previous.study, na.rm = TRUE),
+            Correlation.Q1 = quantile(Correlation_Previous.study, 0.25, na.rm = TRUE),
+            Correlation.Q3 = quantile(Correlation_Previous.study, 0.75, na.rm = TRUE),
+            Unique.proteins = n())
+
+overlap_medians <- cor_table_summarized |> 
+  group_by(Study, Comparison) |> 
+  filter(!is.na(Correlation_Previous.study), !is.na(Correlation_Sissala)) |>
+  summarise(Median.correlation_Overlap = median(Correlation_Previous.study, na.rm = TRUE),
+            Correlation.Q1_Overlap = quantile(Correlation_Previous.study, 0.25, na.rm = TRUE),
+            Correlation.Q3_Overlap = quantile(Correlation_Previous.study, 0.75, na.rm = TRUE),
+            Overlap.with.present.study = n())
+  
+
+study_summary <- study_summary |> 
+  left_join(study_medians, by = c('Study', 'Comparison', 'Unique.proteins')) |> 
+  left_join(overlap_medians, by = c('Study', 'Comparison', 'Overlap.with.present.study'))
+
+study_summary
+
+write.csv(study_summary, file.path(path, 'study_summary.csv'),
+          row.names = FALSE)
+  
+
+```
+
 
 
 
 ## Comparison with other MS-Olink studies
 
-### Petrera et al.
 
-
-#### Correlation calculation 
-
-I matched proteins by UniProt ID and calculated Spearman correlations between DDA-MS and Olink data.
-
-```{r, warning=FALSE}
-
-source('code/correlation_analysis_functions.R')
-
-petrera_dda_olink_cors <- cor.test.df(petrera_dda[-c(1,3:8)], petrera_olink[-c(1:2,4:7)],
-                                      match_by = c('Accession', 'Uniprot ID'),
-                                      cor_type = 'rowwise', cor_method = 'spearman')
-
-nrow(petrera_dda_olink_cors)
-
-
-```
-
-
-#### Overall correlation distribution
-
-
-All MS (DDA)-Olink correlations from the study:
+### Overall correlation distribution
 
 ```{r}
 
-petrera_hist <- petrera_dda_olink_cors |> 
-  mutate(Cor.interval = cor_intervals(Correlation)) |>
-  cor_hist(table_y = 10, table_x = -0.4) +
-  xlim(c(-0.4, 1)) +
-  labs(title = 'Petrera et al.')
+median_df <- study_summary |> 
+  filter(Comparison == 'MS-Olink') |> 
+  mutate(Label = paste('Median:', round(Median.correlation, 2), '\nN =', Unique.proteins))
 
-petrera_hist
-
-```
-
-
-#### Correlation of overlapping protein pairs
-
-Matched proteins between studies by UniProt ID. 
-
-```{r}
-
-petrera_dda_overlap <- my_cors %>%
-  inner_join(petrera_dda_olink_cors, by = join_by(UniProt == Accession),
-             suffix = c('_Sissala', '_Petrera')) |> 
-  mutate(Diff = Correlation_Sissala - Correlation_Petrera,
-         Interval_Sissala = cor_intervals(Correlation_Sissala),
-         Interval_Petrera = cor_intervals(Correlation_Petrera)) |>
-  dplyr::rename(Sissala = Correlation_Sissala, Petrera = Correlation_Petrera)
-
-
-nrow(petrera_dda_overlap)
+cor_table_summarized |> 
+  filter(Comparison == 'MS-Olink') |> 
+  ggplot(aes(x = Correlation_Previous.study)) +
+  geom_histogram(binwidth = 0.05, fill = 'steelblue', color = 'steelblue', alpha = 0.95) +
+  facet_wrap(~ Study, ncol = 2, scales = 'free_y') +
+  # add median line
+  geom_vline(aes(xintercept = median(Correlation_Previous.study, na.rm = TRUE)),
+             linetype = 'dashed', size = 0.3) +
+  # add median text
+  geom_text_npc(data = median_df, 
+                aes(npcx = 'left', npcy = 'top', label = Label),
+                size = 6/.pt) +
+  labs(x = 'MS-Olink correlation', y = 'Count', title = 'MS-Olink correlations across studies')
 
 ```
 
+### Correlation of overlapping protein pairs
+
+Function for plotting histograms of correlations between overlapping proteins in the present study and previous studies:
 
 ```{r}
 
-comp_cor_hist <- function(data, n_overlap, col1, col2) {
-  # Function for correlation histogram
+comparison_histogram <- function(cor_table, comparison, ncol = 2, nrow = NULL,
+                                   facet_labels = NULL) {
   
-  data <- mutate(data, 
-                 Study = paste(Study, 'et al.'),
-                 Study.group = ifelse(Study == 'Sissala et al.', 'Current study', 'Previous study'),
-                 Study.group = factor(Study.group, levels = c('Current study', 'Previous study')))
+  # Prepare data
+  cor_table <- cor_table %>%
+    filter(Comparison == comparison, 
+           !is.na(Correlation_Previous.study), 
+           !is.na(Correlation_Sissala))
   
-  median_df <- data |> 
-    group_by(Study, Study.group) |>
-    summarise(Median = median(Correlation, na.rm = T)) |> 
+  facet_data <- cor_table %>%
+    dplyr::rename(
+      `Present study` = Correlation_Sissala,
+      `Previous study` = Correlation_Previous.study
+    ) %>%
+    pivot_longer(cols = c(`Present study`, `Previous study`),
+                 names_to = "Study.group", values_to = "Correlation")
+  
+  # Compute medians for annotation
+  median_df <- facet_data %>%
+    group_by(Study, Study.group) %>%
+    summarise(Median = median(Correlation, na.rm = TRUE), .groups = "drop",
+              Study_label = ifelse(unique(Study.group) == 'Present study', 
+                     'Sissala et al.',
+                     str_remove(unique(Study), "(?<=\\.).*"))) |> 
+    mutate(
+      label = paste0('Median ', Study_label, ': ', round(Median, 2)),
+      npcx = "left",
+      npcy = ifelse(Study.group == "Present study", 0.9, 0.85)
+    )
+  
+  # Sample size annotation
+  n_df <- cor_table %>% 
+    group_by(Study) %>% 
+    summarise(
+      N = n(),
+      N.unique = ifelse(Study[1] == 'Finkernagel et al.', 
+                        n_distinct(Gene.Name), 
+                        n_distinct(UniProt)),
+      Label = ifelse(N != N.unique,
+                     paste0('N = ', N, ' (', N.unique, ' unique)'),
+                     paste0('N = ', N)),
+      npcx = "left",
+      npcy = 0.95
+    )
+  
+  # Wilcoxon p-values
+  pval_df <- facet_data %>%
+    group_by(Study) %>%
+    summarise(
+      p.value = wilcox.test(Correlation ~ Study.group, data = facet_data[cur_group_rows(), ])$p.value,
+      npcx = "left",
+      npcy = 0.8) |> 
     ungroup() |> 
-    add_row(Study = NA, Median = NA) |> 
-    rowwise() |> 
-    mutate(npcx = 'left',
-           label = ifelse(is.na(Study), str_glue('N = {n_overlap}'),
-                          str_glue('Median {Study}: {round(Median, 2)}'))) |>
-    ungroup() |> 
-    mutate(npcy = rev(calculate.label.npcy('top', 3)))
+    # adjust p-values with FDR method
+    mutate(
+      p.adj = p.adjust(p.value, method = "fdr"),
+      pval_label = format_pval_label(p.adj))
+      
+    
   
-  # add p value to plot below the medians
-  pval_position <- min(median_df$npcy) - 0.05
-  pval <- wilcox.test(Correlation ~ Study, data = data)$p.value
-  pval_label <- paste('Wilcoxon,', ifelse(pval < 0.001, 'p < 0.001', paste('p =', round(pval, 3))))
+  # Default empty named vector if NULL
+  if (is.null(facet_labels)) {
+    facet_labels <- setNames(character(0), character(0))
+  }
   
-  data |> 
-    ggplot() +
+  # Build plot
+  p <- ggplot(facet_data) +
     geom_histogram(aes(Correlation, fill = Study.group, color = Study.group), 
                    binwidth = 0.05, position = 'identity',
                    alpha = 0.5, color = 'grey30', lwd = 0.3) +
-    geom_text_npc(data = median_df[1:2,], aes(npcx = npcx, npcy = npcy, label = label, color = Study.group),
-                  size = 6/.pt) +
-    geom_text_npc(data = median_df[3,], aes(npcx = npcx, npcy = npcy, label = label),
-                  size = 6/.pt, fontface = 'bold') +
-    geom_vline(data = median_df[1:2,], aes(xintercept = Median, color = Study.group),
+    geom_text_npc(data = median_df, aes(npcx = npcx, npcy = npcy, label = label, color = Study.group),
+                  size = 6 / .pt) +
+    geom_text_npc(data = n_df, aes(npcx = npcx, npcy = npcy, label = Label),
+                  size = 6 / .pt, fontface = 'bold') +
+    geom_text_npc(data = pval_df, aes(npcx = npcx, npcy = npcy, label = pval_label),
+                  size = 6 / .pt, parse = TRUE) +
+    geom_vline(data = median_df, aes(xintercept = Median, color = Study.group),
                lwd = 0.3, linetype = 'dashed') +
+    facet_wrap(~ Study, scales = "free_y", ncol = ncol, nrow = nrow,
+               labeller = labeller(Study = facet_labels), axes = 'all') +
     theme_publ() +
     scale_y_continuous(expand = expansion(mult = c(0, 0.05))) +
-    labs(fill = 'Study', color = 'Study', x = 'Cross-platform correlation', y = 'Count') +
-    geom_text_npc(
-      data = data.frame(
-        x = 'left', y = pval_position, label = pval_label
-      ),
-      aes(npcx = x, npcy = y, label = label), size = 6/.pt,
-      inherit.aes = FALSE
-    )
+    labs(fill = 'Study', color = 'Study', x = 'Cross-platform correlation', y = 'Count')
   
   
+  
+  return(p)
 }
 
 
-petrera_overlap_hist <- petrera_dda_overlap |> 
-  pivot_longer(cols = c(Sissala, Petrera),
-               names_to = 'Study', 
-               values_to = 'Correlation') |> 
-  comp_cor_hist(n_overlap = nrow(petrera_dda_overlap))
-
-
-petrera_overlap_hist
-
-
 ```
 
+```{r, fig.width=7, fig.height=8}
 
-### Dammer et al.
 
-As proteins were matched by the authors by gene name to calculate correlations, some correlations were between proteins with different UniProt IDs. I filtered the correlations to ones matched by UniProt ID. The authors calculated Pearson correlations, unlike the other studies, which used Spearman correlations.
-
-
-#### Overall correlation distribution
-
-
-Number and proportion of correlations matched by UniProt ID (not just gene name):
-
-```{r}
-
-# Percentage matched by UniProt from all correlations
-dammer_ms_olink_cors |> 
-  filter(MS.UniProt == Olink.UniProt) |> 
-  nrow()
-
-paste0(round(dammer_ms_olink_cors |> 
-  filter(MS.UniProt == Olink.UniProt) |> 
-  nrow() / nrow(dammer_ms_olink_cors) * 100, 2), '%')
-
-```
-
-Correlations for proteins matched by UniProt ID (N = 254):
-
-```{r}
-
-dammer_hist <- dammer_ms_olink_cors |> 
-  filter(MS.UniProt == Olink.UniProt) |> 
-  dplyr::rename(Correlation = all.cor) |> 
-  mutate(Cor.interval = cor_intervals(Correlation)) |> 
-  cor_hist(table_y = 47, table_x = -0.4) +
-  xlim(c(-0.4, 1)) +
-  labs(title = 'Dammer et al.')
-
-dammer_hist
-
-```
-
-From here on analyses were performed on the proteins matched by UniProt ID.
-
-
-#### Correlation of overlapping protein pairs
-
-Matched proteins between studies by UniProt ID.
-
-```{r}
-
-dammer_ms_olink_overlap <- my_cors %>%
-  inner_join(filter(dammer_ms_olink_cors, MS.UniProt == Olink.UniProt), 
-             by = join_by(UniProt == MS.UniProt)) |> 
-  mutate(Diff = Correlation - all.cor,
-         Interval_Sissala = cor_intervals(Correlation),
-         Interval_Dammer = cor_intervals(all.cor)) |> 
-  dplyr::rename(Sissala = Correlation, Dammer = all.cor)
-
-nrow(dammer_ms_olink_overlap)
-
-```
-
-```{r}
-
-
-dammer_overlap_hist <- dammer_ms_olink_overlap |> 
-  pivot_longer(cols = c(Sissala, Dammer),
-               names_to = 'Study', 
-               values_to = 'Correlation') |> 
-  comp_cor_hist(n_overlap = nrow(dammer_ms_olink_overlap))
-
-
-dammer_overlap_hist
-
-
-```
-
-
-### Nilsson et al.
-
-
-#### Overall correlation distribution
-
-
-```{r}
-
-nilsson_hist <- nilsson_cors |> 
-  dplyr::rename(Correlation = Corr) |> 
-  mutate(Cor.interval = cor_intervals(Correlation)) |> 
-  cor_hist(table_y = 20) +
-  labs(title = 'Nilsson et al.')
-
-```
-
-```{r}
-
-nilsson_hist
-
-```
-
-
-#### Correlation of overlapping protein pairs
-
-Matched proteins between studies by UniProt ID.
-
-```{r}
-
-nilsson_overlap <- my_cors %>%
-  inner_join(nilsson_cors, by = 'UniProt',
-             suffix = c('.Sissala', '.Nilsson')) |> 
-  dplyr::rename(Sissala = Correlation, Nilsson = Corr) |>
-  mutate(Diff = Sissala - Nilsson,
-         Interval_Sissala = cor_intervals(Sissala),
-         Interval_Nilsson = cor_intervals(Nilsson))
-
-nrow(nilsson_overlap)
-
-```
-
-
-```{r}
-
-nilsson_overlap_hist <- nilsson_overlap |> 
-  pivot_longer(cols = c(Sissala, Nilsson),
-               names_to = 'Study', 
-               values_to = 'Correlation') |> 
-  comp_cor_hist(n_overlap = nrow(nilsson_overlap))
-
-nilsson_overlap_hist
-
-
-```
-
-
-
-### Summary
-
-
-```{r}
-
-# Merge correlation data for overlapping protein pairs from the different studies
-ms_olink_overlap_cors <- bind_rows(
-  'Petrera et al.' = petrera_dda_overlap |> 
-    dplyr::rename(Correlation_Sissala = Sissala,
-                  P.value_Sissala = P.value_Spearman,
-                  Adj.p.value_Sissala = Adj.p.value_Spearman,
-                  N_Previous.study = N_Petrera,
-                  Correlation_Previous.study = Petrera,
-                  P.value_Previous.study = P.value,
-                  Adj.p.value_Previous.study = Adj.p.value,
-                  Cor.method_Previous.study = Cor.method,
-                  Interval_Previous.study = Interval_Petrera) |>
-    mutate(Cor.method_Sissala = 'Spearman'),
-  'Dammer et al.' = dammer_ms_olink_overlap |> 
-    dplyr::rename(N_Sissala = N,
-                  Correlation_Sissala = Sissala,
-                  P.value_Sissala = P.value_Spearman,
-                  Adj.p.value_Sissala = Adj.p.value_Spearman,
-                  N_Previous.study = all.nObs,
-                  Correlation_Previous.study = Dammer,
-                  P.value_Previous.study = all.p,
-                  Interval_Previous.study = Interval_Dammer) |> 
-    mutate(Cor.method_Sissala = 'Spearman',
-           Cor.method_Previous.study = 'Pearson'),
-  'Nilsson et al.' = nilsson_overlap |> 
-    dplyr::rename(N_Sissala = N,
-                  Correlation_Sissala = Sissala,
-                  P.value_Sissala = P.value_Spearman,
-                  Adj.p.value_Sissala = Adj.p.value_Spearman,
-                  Correlation_Previous.study = Nilsson,
-                  P.value_Previous.study = p,
-                  Adj.p.value_Previous.study = p_adjust,
-                  Interval_Previous.study = Interval_Nilsson) |>
-    mutate(Cor.method_Sissala = 'Spearman',
-           Cor.method_Previous.study = 'Spearman'),
-  .id = 'Study'
-) |> 
-  dplyr::select(UniProt, Gene.Name, Description, 
-                N_Sissala, Correlation_Sissala, P.value_Sissala, Adj.p.value_Sissala, 
-                Interval_Sissala, Cor.method_Sissala, Study, N_Previous.study, 
-                Correlation_Previous.study, P.value_Previous.study, 
-                Adj.p.value_Previous.study, Cor.method_Previous.study, 
-                Interval_Previous.study)
-
-
-
-```
-
-
-```{r}
-
-write.csv(ms_olink_overlap_cors, file = file.path(path, 'MS-Olink_cor_comparison.csv'), row.names = FALSE)
-
-```
-
-
-```{r, fig.height=5}
-
-# add titles
-petrera_overlap_hist <- petrera_overlap_hist +
-  labs(title = 'Petrera et al.', x = 'MS-Olink correlation')
-
-dammer_overlap_hist <- dammer_overlap_hist +
-  labs(title = 'Dammer et al.', x = 'MS-Olink correlation')
-
-nilsson_overlap_hist <- nilsson_overlap_hist +
-  labs(title = 'Nilsson et al.', x = 'MS-Olink correlation')
-
-
-guide_area() + petrera_overlap_hist + dammer_overlap_hist + nilsson_overlap_hist +
-  plot_spacer() +
-  plot_layout(design = 'AA\nBC\nDE', heights = c(0.1, 1, 1),
-              guides = 'collect')
-
+comparison_histogram(cor_table_summarized, comparison = 'MS-Olink', ncol = 2, 
+                       facet_labels = c('Dammer et al. (MS-Olink)' = 'Dammer et al.'))
+  
 ```
 
 ```{r}
 
 ggsave(filename = 'MS-Olink_cors_overlappingProteins.pdf',
        path = path,
-       width = 18.3,
-       height = 15,
+       width = 18,
+       height = 18,
        units = 'cm')
 
 ```
 
-
-
-## Comparison with MS-SomaScan studies
-
-
-### Dammer et al.
-
-As proteins were matched by the authors by gene name to calculate correlations, some correlations were between proteins with different UniProt IDs. I filtered the correlations to ones matched by UniProt ID. 
-
-
-#### Overall correlation distribution
-
-Number and proportion of correlations matched by UniProt ID (not just gene name):
+Save correlation table for overlapping proteins between previous MS-Olink studies and the present study:
 
 ```{r}
 
-# Percentage matched by UniProt from all correlations
-dammer_ms_soma_cors |> 
-  filter(MS.UniProt == SomaScan.UniProt) |> 
-  nrow()
+ms_olink_cors <- cor_table |> 
+  filter(Comparison == 'MS-Olink', !is.na(Correlation_Previous.study),
+         !is.na(Correlation_Sissala)) |>
+  select(Study, UniProt, Gene.Name, Description, contains('Previous.study'), 
+         contains('Sissala')) |> 
+  mutate(Study = ifelse(str_detect(Study, 'Dammer'),
+                       'Dammer et al.', Study))
 
-paste0(round(dammer_ms_soma_cors |> 
-  filter(MS.UniProt == SomaScan.UniProt) |> 
-  nrow() / nrow(dammer_ms_soma_cors) * 100, 2), '%')
+write.csv(ms_olink_cors, file.path(path, 'MS-Olink_cor_comparisons.csv'),
+          row.names = FALSE)
 
 ```
 
 
-Correlations for proteins matched by UniProt ID:
+## Comparison with other MS-SomaScan studies
+
+### Overall correlation distribution
 
 ```{r}
 
-dammer_ms_soma_cors |>
-  filter(MS.UniProt == SomaScan.UniProt) |> 
-  ggplot.histogram(all.cor, binwidth = 0.05, fill = 'steelblue',
-                   alpha = 0.8, color = 'steelblue', 
-                   median_line_params = list(lwd = 0.3),
-                   median_text_params = list(size = 6/.pt),
-                   xlab = 'Correlation',
-                   title = 'Dammer et al. MS-SomaScan correlations') +
-    theme_publ()
+median_df <- study_summary |> 
+  filter(Comparison == 'MS-SomaScan') |> 
+  mutate(Label = paste('Median:', round(Median.correlation, 2), '\nN =', Unique.proteins))
+
+
+cor_table_summarized |>
+  filter(Comparison == 'MS-SomaScan') |> 
+  ggplot(aes(x = Correlation_Previous.study)) +
+  geom_histogram(binwidth = 0.05, fill = 'steelblue', color = 'steelblue', alpha = 0.95) +
+  facet_wrap(~ Study, ncol = 2, scales = 'free_y') +
+  # add median line
+  geom_vline(aes(xintercept = median(Correlation_Previous.study, na.rm = TRUE)),
+             linetype = 'dashed', size = 0.3) +
+  # add median text
+  geom_text_npc(data = median_df, 
+                aes(npcx = 'left', npcy = 'top', label = Label),
+                size = 6/.pt) +
+  labs(x = 'MS-SomaScan correlation', y = 'Count', title = 'MS-SomaScan correlations across studies')
 
 ```
 
-From here on analyses were performed on the proteins matched by UniProt ID.
-
-
-#### Correlation of overlapping protein pairs
-
-```{r}
-
-dammer_ms_soma_overlap <- my_cors %>%
-  inner_join(filter(dammer_ms_soma_cors, MS.UniProt == SomaScan.UniProt), 
-             by = join_by(UniProt == MS.UniProt)) |> 
-  dplyr::rename(Sissala = Correlation, Dammer = all.cor) |> 
-  mutate(Diff = Sissala - Dammer,
-         Interval_Sissala = cor_intervals(Sissala),
-         Interval_Dammer = cor_intervals(Dammer))
-
-nrow(dammer_ms_soma_overlap)
-
-```
+### Correlation of overlapping protein pairs
 
 
 ```{r}
 
-dammer_ms_soma_overlap_hist <- dammer_ms_soma_overlap |> 
-  pivot_longer(cols = c(Sissala, Dammer),
-               names_to = 'Study', 
-               values_to = 'Correlation') |>
-  comp_cor_hist(n_overlap = nrow(dammer_ms_soma_overlap)) +
-  labs(title = 'Dammer et al.', x = 'MS-SomaScan correlation') 
+comparison_histogram(cor_table_summarized, comparison = 'MS-SomaScan', ncol = 2,
+                       facet_labels = c('Dammer et al. (MS-SomaScan)' = 'Dammer et al.'))
 
-guide_area() / dammer_ms_soma_overlap_hist + plot_layout(guides = 'collect',
-              heights = c(0.1,1))
 ```
 
 ```{r}
 
 ggsave(filename = 'MS-SomaScan_cors_overlappingProteins.pdf',
        path = path,
-       width = 8.7,
-       height = 6.5,
+       width = 18,
+       height = 12,
        units = 'cm')
 
 ```
 
-
-Save results:
-
-```{r}
-
-ms_soma_overlap_cors <- my_cors %>%
-  inner_join(filter(dammer_ms_soma_cors, MS.UniProt == SomaScan.UniProt), 
-             by = join_by(UniProt == MS.UniProt)) |> 
-  mutate(Diff = Correlation - all.cor,
-         Interval_Sissala = cor_intervals(Correlation),
-         Interval_Previous.study = cor_intervals(all.cor),
-         Study = 'Dammer et al.',
-         Cor.method_Sissala = 'Spearman',
-         Cor.method_Previous.study = 'Pearson') |>
-  dplyr::rename(N_Sissala = N,
-                Correlation_Sissala = Correlation,
-                P.value_Sissala = P.value_Spearman,
-                Adj.p.value_Sissala = Adj.p.value_Spearman,
-                N_Previous.study = all.nObs,
-                Correlation_Previous.study = all.cor,
-                P.value_Previous.study = all.p) |> 
-  dplyr::select(UniProt, Gene.Name, Description, N_Sissala, Correlation_Sissala,
-                 P.value_Sissala, Adj.p.value_Sissala, Interval_Sissala, 
-                 Cor.method_Sissala, Study, N_Previous.study, Correlation_Previous.study,
-                 P.value_Previous.study, Cor.method_Previous.study, Interval_Previous.study)
-
-```
+Save correlation table for overlapping proteins between previous MS-SomaScan studies and the present study:
 
 ```{r}
 
-write.csv(ms_soma_overlap_cors, file.path(path, 'MS-SomaScan_cor_comparison.csv'),
-          row.names = F)
+ms_soma_cors <- cor_table |> 
+  filter(Comparison == 'MS-SomaScan', !is.na(Correlation_Previous.study),
+         !is.na(Correlation_Sissala)) |>
+  select(Study, UniProt, Gene.Name, Description, SomaID, SomaScan.SeqID,
+         contains('Previous.study'), contains('Sissala')) |> 
+  mutate(Study = ifelse(str_detect(Study, 'Dammer'),
+                       'Dammer et al.', Study))
+
+write.csv(ms_soma_cors, file.path(path, 'MS-SomaScan_cor_comparisons.csv'),
+          row.names = FALSE)
 
 ```
 
 
 
-## Comparison with Olink-SomaScan studies
+## Comparison with other Olink-SomaScan studies
 
-### Katz et al
+### Overall correlation distribution
+
+```{r, fig.width=7, fig.height=8}
+
+median_df <- study_summary |> 
+  filter(Comparison == 'Olink-SomaScan') |> 
+  mutate(Label = paste('Median:', round(Median.correlation, 2), '\nN =', Unique.proteins))
 
 
-#### Overall correlation distribution
+cor_table_summarized |>
+  filter(Comparison == 'Olink-SomaScan') |> 
+  ggplot(aes(x = Correlation_Previous.study)) +
+  geom_histogram(binwidth = 0.05, fill = 'steelblue', color = 'steelblue', alpha = 0.95) +
+  facet_wrap(~ Study, ncol = 3, scales = 'free_y') +
+  # add median line
+  geom_vline(aes(xintercept = median(Correlation_Previous.study, na.rm = TRUE)),
+             linetype = 'dashed', size = 0.3) +
+  # add median text
+  geom_text_npc(data = median_df, 
+                aes(npcx = 'left', npcy = 'top', label = Label),
+                size = 6/.pt) +
+  labs(x = 'Olink-SomaScan correlation', y = 'Count', title = 'Olink-SomaScan correlations across studies')
 
-```{r}
+```
 
-ggplot.histogram(katz_cors, rho, binwidth = 0.05, fill = 'steelblue',
-                 alpha = 0.8, color = 'steelblue', 
-                 median_line_params = list(lwd = 0.3),
-                 median_text_params = list(size = 6/.pt),
-                 xlab = 'Correlation',
-                 title = 'Katz et al. Olink-SomaScan correlations') +
-  theme_publ()
+### Correlation of overlapping protein pairs
+
+```{r, fig.width=7, fig.height=10}
+
+facet_labels <- c('Dammer et al. (Olink-SomaScan)' = 'Dammer et al.')
+
+olink_soma_studies <- cor_table_summarized |> 
+  filter(Comparison == 'Olink-SomaScan') |> 
+  pull(Study) |> 
+  unique()
+
+cor_table_summarized |> 
+  filter(Study %in% olink_soma_studies[1:8]) |> 
+  comparison_histogram(comparison = 'Olink-SomaScan', nrow = 4, ncol = 2,
+                       facet_labels = facet_labels) +
+  labs(caption = 'Continued on the next page') +
+  theme(plot.caption = element_text(hjust = 0.5, size = 8, face = 'bold',
+                                    margin = margin(t = 10, b = 10)))
+  
+
+ggsave(filename = 'Olink-SomaScan_cors_overlappingProteins_page1.pdf',
+       path = path,
+       width = 18,
+       height = 25,
+       units = 'cm')
+
+```
+
+```{r, fig.width=7, fig.height=8}
+
+cor_table_summarized |> 
+  filter(Study %in% olink_soma_studies[9:length(olink_soma_studies)]) |>
+  comparison_histogram(comparison = 'Olink-SomaScan', nrow = 3, ncol = 2,
+                       facet_labels = facet_labels)
+
+ggsave(filename = 'Olink-SomaScan_cors_overlappingProteins_page2.pdf',
+       path = path,
+       width = 18,
+       height = 18,
+       units = 'cm')
+
 
 ```
 
 
-#### Correlation of overlapping protein pairs
+
+
+Save correlation table for overlapping proteins between previous Olink-SomaScan studies and the present study:
 
 ```{r}
 
-katz_overlap <- my_cors %>%
-  inner_join(katz_cors, by = join_by(UniProt == UniProt.x)) |> 
-  mutate(Diff = Correlation - rho,
-         Interval_Sissala = cor_intervals(Correlation),
-         Interval_Katz = cor_intervals(rho)) |> 
-  dplyr::rename(Sissala = Correlation, Katz = rho)
+olink_soma_cors <- cor_table |> 
+  filter(Comparison == 'Olink-SomaScan', !is.na(Correlation_Previous.study),
+         !is.na(Correlation_Sissala)) |>
+  select(Study, UniProt, Gene.Name, Description, SomaID, SomaScan.SeqID,
+         contains('Previous.study'), contains('Sissala')) |> 
+  mutate(Study = ifelse(str_detect(Study, 'Dammer'),
+                       'Dammer et al.', Study))
 
-nrow(katz_overlap)
+write.csv(olink_soma_cors, file.path(path, 'Olink-SomaScan_cor_comparisons.csv'),
+          row.names = FALSE)
 
 ```
 
 
-```{r}
-
-katz_overlap_hist <- katz_overlap |> 
-  pivot_longer(cols = c(Sissala, Katz),
-               names_to = 'Study', 
-               values_to = 'Correlation') |> 
-  comp_cor_hist(n_overlap = nrow(katz_overlap))
-
-katz_overlap_hist
-
-```
-
-
-### Eldjarn et al
-
-
-I chose to use the SMP-normalized correlations from Eldjarn et al. here, as presented in the main figures of the paper.
-
-#### Overall correlation distribution
-
-```{r}
-
-ggplot.histogram(eldjarn_cors, olink_smpnorm_corr, binwidth = 0.05, fill = 'steelblue',
-                 alpha = 0.8, color = 'steelblue', 
-                 median_line_params = list(lwd = 0.3),
-                 median_text_params = list(size = 6/.pt),
-                 xlab = 'Correlation',
-                 title = 'Eldjarn et al. Olink-SomaScan correlations') +
-  theme_publ()
-
-
-```
-
-
-#### Correlation of overlapping protein pairs
-
-```{r}
-
-eldjarn_overlap <- my_cors %>%
-  inner_join(eldjarn_cors, by = join_by(UniProt == uniprot)) |> 
-  mutate(Diff = Correlation - olink_smpnorm_corr,
-         Interval_Sissala = cor_intervals(Correlation),
-         Interval_Eldjarn = cor_intervals(olink_smpnorm_corr)) |> 
-  dplyr::rename(Sissala = Correlation, Eldjarn = olink_smpnorm_corr)
-
-nrow(eldjarn_overlap)
-
-```
-
-
-```{r}
-
-eldjarn_overlap_hist <- eldjarn_overlap |> 
-  pivot_longer(cols = c(Sissala, Eldjarn),
-               names_to = 'Study', 
-               values_to = 'Correlation') |> 
-  comp_cor_hist(n_overlap = nrow(eldjarn_overlap))
-
-eldjarn_overlap_hist
-
-```
-
-
-#### Cross-platform correlations by confidence tier
-
+## Cross-platform correlations by Eldjarn confidence tiers
 
 ```{r}
 
 # Merge correlations from the current study and Eldjarn et al.
 tier_cors <- my_cors |> 
   inner_join(eldjarn_tiers, by = c('UniProt', 'OlinkID')) |>
-  mutate(olink.smp.corr = as.numeric(olink.smp.corr)) |> 
-  # For duplicated assays in Olink/SomaScan in Eldjarn,
-  # keep the one with the highest correlation
-  arrange(-olink.smp.corr) |> 
-  distinct(UniProt, .keep_all = T) |> 
-  dplyr::select(1:8, P.value_Spearman, Adj.p.value_Spearman, olink.smp.corr, 
-                olink.smp.pval, cis.pQTL.olink, PAV.olink, eQTL.olink, 
-                cis.pQTL.soma, PAV.soma, eQTL.soma, confidence.tier) |> 
-  dplyr::rename(Correlation_Sissala = Correlation, 
-                P.value_Sissala = P.value_Spearman,
-                Adj.p.value_Sissala = Adj.p.value_Spearman,
-                Correlation_Eldjarn = olink.smp.corr,
-                P.value_Eldjarn = olink.smp.pval,
-                cis.pQTL.olink_Eldjarn = cis.pQTL.olink,
-                PAV.olink_Eldjarn = PAV.olink,
-                eQTL.olink_Eldjarn = eQTL.olink,
-                cis.pQTL.soma_Eldjarn = cis.pQTL.soma,
-                PAV.soma_Eldjarn = PAV.soma,
-                eQTL.soma_Eldjarn = eQTL.soma,
-                confidence.tier_Eldjarn = confidence.tier) |> 
+  dplyr::select(1:4, SomaScan.SeqID, Correlation_Sissala, P.value_Sissala, 
+                Adj.p.value_Sissala, N_Sissala, 
+                Correlation_Eldjarn, P.value_Eldjarn, 
+                contains('cis.pQTL'), confidence.tier_Eldjarn) |> 
   # Which platform each cis-pQTL was identified on
   mutate(cis.pQTL.platform_Eldjarn = case_when(
     cis.pQTL.olink_Eldjarn == 'Y' & cis.pQTL.soma_Eldjarn == 'Y' ~ 'Both',
@@ -855,7 +858,7 @@ tier_cors <- my_cors |>
       cis.pQTL.platform_Eldjarn, 
       levels = c('Both', 'Olink only', 'SomaScan only', 'None')),
     # Add column for high correlation in both studies
-    High.corr.in.both = Correlation_Sissala > 0.7 & Correlation_Eldjarn > 0.7)
+    High.corr.in.both.studies = Correlation_Sissala > 0.7 & Correlation_Eldjarn > 0.7)
                 
 # Color palette for confidence tiers
 tier_palette <- desaturate(darken(brewer.pal(3, 'Set2')[c(1,3,2)]), -0.2)
@@ -897,7 +900,11 @@ tier_cors |>
        y = 'MS-Olink correlation (Sissala et al.)') +
   geom_abline(linetype = 'dashed', lwd = 0.4)  +
   scale_color_manual(values = tier_palette,
-                     aesthetics = c('color', 'fill'))
+                     aesthetics = c('color', 'fill')) +
+  scale_x_continuous(expand = expansion(mult = c(0.02, 0)),
+                     limits = c(-0.5, 1)) +
+  scale_y_continuous(expand = expansion(mult = c(0.02, 0)),
+                     limits = c(-0.5, 1))
 
 median_df
 
@@ -924,9 +931,10 @@ Boxplot of cross-platform correlation by tiers:
 
 ```{r}
 
+set.seed(1)
 p1 <- ggplot.jitterbox(tier_cors, confidence.tier_Eldjarn, Correlation_Sissala, show.legend = F) +
   geom_pwc(method = 't.test', tip.length = 0.02, label.size = 6/.pt,
-           p.adjust.method = 'fdr', label = 'p.adj.signif', step.increase = 0.1, vjust = 0.5) +
+           p.adjust.method = 'fdr', label = 'p.adj.signif', step.increase = 0.1) +
   labs(x = 'Confidence tier (Eldjarn et al.)', y = 'MS-Olink correlation (Sissala et al.)') +
   scale_color_manual(values = tier_palette,
                      aesthetics = c('color', 'fill')) +
@@ -934,13 +942,13 @@ p1 <- ggplot.jitterbox(tier_cors, confidence.tier_Eldjarn, Correlation_Sissala, 
 
 p2 <- ggplot.jitterbox(tier_cors, confidence.tier_Eldjarn, Correlation_Eldjarn, show.legend = F) +
   geom_pwc(method = 't.test', tip.length = 0.02, label.size = 6/.pt,
-           p.adjust.method = 'fdr', label = 'p.adj.signif', step.increase = 0.1, vjust = 0.5) +
+           p.adjust.method = 'fdr', label = 'p.adj.signif', step.increase = 0.1) +
   labs(x = 'Confidence tier (Eldjarn et al.)', y = 'Olink-SomaScan correlation (Eldjarn et al.)') +
   scale_color_manual(values = tier_palette,
                      aesthetics = c('color', 'fill')) +
   labs(title = 'Olink-SomaScan correlation')
 
-guide_area() / (p1 | p2) + plot_layout(guides = 'collect', height = c(0.01,1))
+p1 | p2
 
 ```
 
@@ -959,6 +967,7 @@ Cross-platform correlation by pQTLs:
 
 ```{r}
 
+set.seed(1)
 tier_cors |> 
   ggplot.jitterbox(cis.pQTL.platform_Eldjarn, Correlation_Sissala, show.legend = F) +
   labs(x = 'cis pQTL in (Eldjarn et al.)', y = 'MS-Olink correlation (Sissala et al.)') +
@@ -988,6 +997,7 @@ ggsave(filename = 'MS-Olink_cor_by_Eldjarn_pQTLs.pdf',
 
 ```{r}
 
+set.seed(1)
 tier_cors |> pivot_longer(
   cols = c(Correlation_Sissala, Correlation_Eldjarn), 
   names_to = c('.value', 'Study'),
@@ -1012,450 +1022,5 @@ ggsave(filename = 'cor_by_tier_Sissala_vs_Eldjarn.pdf',
        units = 'cm')
 
 ```
-
-
-
-### Pietzner et al
-
-
-The authors calculated correlations based on SMP-normalized and non-normalized data. I chose to use the normalized correlations here.
-
-
-#### Overall correlation distribution
-
-```{r}
-
-ggplot.histogram(pietzner_cors, Correlation.norm, binwidth = 0.05, fill = 'steelblue',
-                 alpha = 0.8, color = 'steelblue', 
-                 median_line_params = list(lwd = 0.3),
-                 median_text_params = list(size = 6/.pt),
-                 xlab = 'Correlation',
-                 title = 'Pietzner et al. Olink-SomaScan correlations') +
-  theme_publ()
-
-
-```
-
-
-#### Correlation of overlapping protein pairs
-
-Proteins were matched between studies by UniProt IDs.
-
-```{r}
-
-pietzner_overlap <- my_cors %>%
-  inner_join(pietzner_cors, by = join_by(UniProt == UniprotID)) |> 
-  mutate(Diff = Correlation - Correlation.norm,
-         Interval_Sissala = cor_intervals(Correlation),
-         Interval_Pietzner = cor_intervals(Correlation.norm)) |> 
-  dplyr::rename(Sissala = Correlation, Pietzner = Correlation.norm)
-
-nrow(pietzner_overlap)
-
-```
-
-
-```{r}
-
- 
-pietzner_overlap_hist <- pietzner_overlap |> 
-  pivot_longer(cols = c(Sissala, Pietzner),
-               names_to = 'Study', 
-               values_to = 'Correlation') |> 
-  comp_cor_hist(n_overlap = nrow(pietzner_overlap))
-
-pietzner_overlap_hist
-
-```
-
-
-
-### Rooney et al.
-
-
-#### Overall correlation distribution
-
-```{r}
-
-ggplot.histogram(rooney_cors, Correlation, binwidth = 0.05, fill = 'steelblue',
-                 alpha = 0.8, color = 'steelblue', 
-                 median_line_params = list(lwd = 0.3),
-                 median_text_params = list(size = 6/.pt),
-                 xlab = 'Correlation',
-                 title = 'Rooney et al. Olink-SomaScan correlations') +
-  theme_publ()
-
-
-```
-
-
-#### Correlation of overlapping protein pairs
-
-
-Matching was done using UniProt IDs.
-
-```{r}
-
-rooney_overlap <- my_cors %>%
-  inner_join(rooney_cors, by = join_by(UniProt == UniprotID),
-             suffix = c('_Sissala', '_Rooney')) |> 
-  mutate(Diff = Correlation_Sissala - Correlation_Rooney,
-         Interval_Sissala = cor_intervals(Correlation_Sissala),
-         Interval_Rooney = cor_intervals(Correlation_Rooney)) |> 
-  dplyr::rename(Sissala = Correlation_Sissala, Rooney = Correlation_Rooney)
-
-nrow(rooney_overlap)
-
-```
-
-```{r}
-
- 
-rooney_overlap_hist <- rooney_overlap |> 
-  pivot_longer(cols = c(Sissala, Rooney),
-               names_to = 'Study', 
-               values_to = 'Correlation') |> 
-  comp_cor_hist(n_overlap = nrow(rooney_overlap))
-
-rooney_overlap_hist
-
-
-```
-
-
-### Raffield et al.
-
-
-#### Overall correlation distribution
-
-```{r}
-
-ggplot.histogram(raffield_cors, rs, binwidth = 0.05, fill = 'steelblue',
-                 alpha = 0.8, color = 'steelblue', 
-                 median_line_params = list(lwd = 0.3),
-                 median_text_params = list(size = 6/.pt),
-                 xlab = 'Correlation',
-                 title = 'Raffield et al. Olink-SomaScan correlations') +
-  theme_publ()
-
-```
-
-#### Correlation of overlapping protein pairs
-
-```{r}
-
-raffield_overlap <- my_cors %>%
-  inner_join(raffield_cors, by = 'UniProt') |> 
-  mutate(Diff = Correlation - rs,
-         Interval_Sissala = cor_intervals(Correlation),
-         Interval_Raffield = cor_intervals(rs)) |> 
-  dplyr::rename(Sissala = Correlation, Raffield = rs)
-
-nrow(raffield_overlap)
-
-```
-
-```{r}
-
- 
-raffield_overlap_hist <- raffield_overlap |> 
-  pivot_longer(cols = c(Sissala, Raffield),
-               names_to = 'Study', 
-               values_to = 'Correlation') |> 
-  comp_cor_hist(n_overlap = nrow(raffield_overlap))
-
-raffield_overlap_hist
-
-
-```
-
-
-### Finkernagel et al.
-
-The authors calculated both Pearson and Spearman correlations. I chose to use the Spearman correlations here as the other studies used Spearman correlations.
-
-#### Overall correlation distribution
-
-```{r}
-
-ggplot.histogram(finkernagel_cors, Spearman.rho, binwidth = 0.05, fill = 'steelblue',
-                 alpha = 0.8, color = 'steelblue', 
-                 median_line_params = list(lwd = 0.3),
-                 median_text_params = list(size = 6/.pt),
-                 xlab = 'Correlation',
-                 title = 'Finkernagel et al. Olink-SomaScan correlations') +
-  theme_publ()
-
-
-```
-
-#### Correlation of overlapping protein pairs
-
-```{r}
-
-finkernagel_overlap <- my_cors %>%
-  inner_join(finkernagel_cors, by = 'Gene.Name') |> 
-  mutate(Diff = Correlation - Spearman.rho,
-         Interval_Sissala = cor_intervals(Correlation),
-         Interval_Finkernagel = cor_intervals(Spearman.rho)) |> 
-  dplyr::rename(Sissala = Correlation, Finkernagel = Spearman.rho)
-
-nrow(finkernagel_overlap)
-
-```
-
-
-```{r}
-
-finkernagel_overlap_hist <- finkernagel_overlap |> 
-  pivot_longer(cols = c(Sissala, Finkernagel),
-               names_to = 'Study', 
-               values_to = 'Correlation') |> 
-  comp_cor_hist(n_overlap = nrow(finkernagel_overlap))
-
-finkernagel_overlap_hist
-
-```
-
-
-### Haslam et al.
-
-
-
-#### Overall correlation distribution
-
-```{r}
-
-ggplot.histogram(haslam_cors, r, binwidth = 0.05, fill = 'steelblue',
-                 alpha = 0.8, color = 'steelblue', 
-                 median_line_params = list(lwd = 0.3),
-                 median_text_params = list(size = 6/.pt),
-                 xlab = 'Correlation',
-                 title = 'Haslam et al. Olink-SomaScan correlations') +
-  theme_publ()
-
-```
-
-#### Correlation of overlapping protein pairs
-
-```{r}
-
-haslam_overlap <- my_cors %>%
-  inner_join(haslam_cors, by = join_by(UniProt == UniprotID)) |> 
-  mutate(Diff = Correlation - r,
-         Interval_Sissala = cor_intervals(Correlation),
-         Interval_Haslam = cor_intervals(r)) |> 
-  dplyr::rename(Sissala = Correlation, Haslam = r)
-
-nrow(haslam_overlap)
-
-```
-
-```{r}
-
-haslam_overlap_hist <- haslam_overlap |> 
-  pivot_longer(cols = c(Sissala, Haslam),
-               names_to = 'Study', 
-               values_to = 'Correlation') |> 
-  comp_cor_hist(n_overlap = nrow(haslam_overlap))
-
-haslam_overlap_hist
-
-```
-
-
-### Dammer et al.
-
-
-#### Overall correlation distribution
-
-
-Proteins matched by UniProt ID:
-
-```{r}
-
-dammer_soma_olink_cors |>
-  filter(SomaScan.UniProt == Olink.UniProt) |>
-  nrow() / nrow(dammer_soma_olink_cors) * 100
-
-```
-
-```{r}
-
-dammer_soma_olink_cors |>
-  filter(SomaScan.UniProt == Olink.UniProt) |>
-  ggplot.histogram(all.cor, binwidth = 0.05, fill = 'steelblue',
-                   alpha = 0.8, color = 'steelblue', 
-                   median_line_params = list(lwd = 0.3),
-                   median_text_params = list(size = 6/.pt),
-                   xlab = 'Correlation',
-                   title = 'Dammer et al. Olink-SomaScan correlations') +
-    theme_publ()
-
-```
-
-
-#### Correlation of overlapping protein pairs
-
-
-```{r}
-
-dammer_olink_soma_overlap <- my_cors %>%
-  inner_join(dammer_soma_olink_cors, by = c('UniProt' = 'SomaScan.UniProt')) |> 
-  mutate(Diff = Correlation - all.cor,
-         Interval_Sissala = cor_intervals(Correlation),
-         Interval_Dammer = cor_intervals(all.cor)) |> 
-  dplyr::rename(Sissala = Correlation, Dammer = all.cor)
-
-nrow(dammer_olink_soma_overlap)
-
-
-```
-
-
-```{r}
-
-dammer_olink_soma_overlap_hist <- dammer_olink_soma_overlap |> 
-  pivot_longer(cols = c(Sissala, Dammer),
-               names_to = 'Study', 
-               values_to = 'Correlation') |> 
-  comp_cor_hist(n_overlap = nrow(dammer_olink_soma_overlap))
-
-dammer_olink_soma_overlap_hist
-
-```
-
-
-### Summary
-
-```{r}
-
-# Merge all correlation data
-olink_soma_overlap_cors <- bind_rows(
-  'Katz et al.' = katz_overlap |> 
-    dplyr::rename(N_Sissala = N, 
-                  Correlation_Sissala = Sissala, 
-                  P.value_Sissala = P.value_Spearman,
-                  Adj.p.value_Sissala = Adj.p.value_Spearman,
-                  Correlation_Previous.study = Katz,
-                  P.value_Previous.study = p...11),
-  'Eldjarn et al.' = eldjarn_overlap |>
-    dplyr::rename(N_Sissala = N, 
-                  Correlation_Sissala = Sissala, 
-                  P.value_Sissala = P.value_Spearman,
-                  Adj.p.value_Sissala = Adj.p.value_Spearman,
-                  Correlation_Previous.study = Eldjarn,
-                  P.value_Previous.study = olink_smpnorm_pval),
-  'Pietzner et al.' = pietzner_overlap |>
-    dplyr::rename(N_Sissala = N, 
-                  Correlation_Sissala = Sissala, 
-                  P.value_Sissala = P.value_Spearman,
-                  Adj.p.value_Sissala = Adj.p.value_Spearman,
-                  Correlation_Previous.study = Pietzner),
-  'Rooney et al.' = rooney_overlap |>
-    dplyr::rename(N_Sissala = N, 
-                  Correlation_Sissala = Sissala, 
-                  P.value_Sissala = P.value_Spearman,
-                  Adj.p.value_Sissala = Adj.p.value_Spearman,
-                  Correlation_Previous.study = Rooney,
-                  P.value_Previous.study = P.value.Correlation.SomaScan.vs.Olink),
-  'Raffield et al.' = raffield_overlap |>
-    dplyr::rename(N_Sissala = N, 
-                  Correlation_Sissala = Sissala, 
-                  P.value_Sissala = P.value_Spearman,
-                  Adj.p.value_Sissala = Adj.p.value_Spearman,
-                  Correlation_Previous.study = Raffield,
-                  N_Previous.study = n),
-  'Finkernagel et al.' = finkernagel_overlap |>
-    dplyr::rename(N_Sissala = N, 
-                  Correlation_Sissala = Sissala, 
-                  P.value_Sissala = P.value_Spearman,
-                  Adj.p.value_Sissala = Adj.p.value_Spearman,
-                  Correlation_Previous.study = Finkernagel),
-  'Dammer et al.' = dammer_olink_soma_overlap |>
-    dplyr::rename(N_Sissala = N, 
-                  Correlation_Sissala = Sissala, 
-                  P.value_Sissala = P.value_Spearman,
-                  Adj.p.value_Sissala = Adj.p.value_Spearman,
-                  Correlation_Previous.study = Dammer,
-                  P.value_Previous.study = all.p,
-                  N_Previous.study = all.nObs),
-  'Haslam et al.' = haslam_overlap |>
-    dplyr::rename(N_Sissala = N, 
-                  Correlation_Sissala = Sissala, 
-                  P.value_Sissala = P.value_Spearman,
-                  Adj.p.value_Sissala = Adj.p.value_Spearman,
-                  Correlation_Previous.study = Haslam),
-  .id = 'Study') |> 
-  mutate(Interval_Sissala = cor_intervals(Correlation_Sissala),
-         Cor.method_Sissala = 'Spearman',
-         Cor.method_Previous.study = case_when(
-           Study == 'Dammer et al.' ~ 'Pearson',
-           TRUE ~ 'Spearman'),
-         Interval_Previous.study = cor_intervals(Correlation_Previous.study)) |> 
-  dplyr::select(UniProt, Gene.Name, Description, N_Sissala, Correlation_Sissala, 
-                P.value_Sissala, Adj.p.value_Sissala, Interval_Sissala,
-                Cor.method_Sissala, Study, N_Previous.study, Correlation_Previous.study, 
-                P.value_Previous.study, Interval_Previous.study, Cor.method_Previous.study)
-
-```
-
-
-```{r}
-
-write.csv(olink_soma_overlap_cors, file.path(path, 'Olink-SomaScan_cor_comparison.csv'), 
-          row.names = F)
-
-```
-
-
-```{r, fig.height=8, fig.width=5}
-
-# Add titles
-dammer_olink_soma_overlap_hist <- dammer_olink_soma_overlap_hist +
-  labs(title = 'Dammer et al.') 
-
-eldjarn_overlap_hist <- eldjarn_overlap_hist +
-  labs(title = 'Eldjarn et al.')
-
-finkernagel_overlap_hist <- finkernagel_overlap_hist +
-  labs(title = 'Finkernagel et al.')
-
-haslam_overlap_hist <- haslam_overlap_hist +
-  labs(title = 'Haslam et al.')
-
-katz_overlap_hist <- katz_overlap_hist +
-  labs(title = 'Katz et al.')
-
-pietzner_overlap_hist <- pietzner_overlap_hist +
-  labs(title = 'Pietzner et al.')
-
-raffield_overlap_hist <- raffield_overlap_hist +
-  labs(title = 'Raffield et al.')
-
-rooney_overlap_hist <- rooney_overlap_hist +
-  labs(title = 'Rooney et al.')
-
-
-guide_area()  +
-dammer_olink_soma_overlap_hist + eldjarn_overlap_hist + finkernagel_overlap_hist + 
-  haslam_overlap_hist + katz_overlap_hist + pietzner_overlap_hist + raffield_overlap_hist +
-  rooney_overlap_hist +
-  plot_layout(design = 'AA\nBC\nDE\nFG\nHI',
-              heights = c(0.1,1,1,1,1),
-              guides = 'collect')
-
-```
-
-```{r}
-
-ggsave(filename = 'Olink-SomaScan_cors_overlappingProteins.pdf',
-       path = path,
-       width = 18.3, 
-       height = 21,
-       units = 'cm')
-
-```
-
 
 

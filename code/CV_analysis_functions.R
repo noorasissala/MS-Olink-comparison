@@ -8,11 +8,11 @@ CV.log2 <- function(x) {
 calc_tech_CV <- function(ms_data, olink_data) {
   
   olink_CV <- olink_data %>% 
-    group_by(UniProt) %>% 
+    group_by(UniProt, OlinkID) %>% 
     filter(str_detect(Sample.ID, 'Control')) %>% 
     summarize(Technical.CV = CV.log2(NPX)) |> 
     mutate(Analyzed = !is.na(Technical.CV) & !is.nan(Technical.CV),
-           Technical.CV = ifelse(Technical.CV > 100, NA, Technical.CV),
+           Technical.CV = ifelse(Technical.CV > 100, 100, Technical.CV), # cap CV at 100%
            Technical.CV = ifelse(is.nan(Technical.CV), NA, Technical.CV))
   
   replicates <- c('LCP27' , 'LCP106' , 'LCP65' , 'LCP76' , 'LCP109' , 'LCP90')
@@ -28,7 +28,7 @@ calc_tech_CV <- function(ms_data, olink_data) {
     group_by(UniProt) %>% 
     summarize(Technical.CV = mean(Technical.CV, na.rm = T)) |> 
     mutate(Analyzed = !is.na(Technical.CV) & !is.nan(Technical.CV),
-           Technical.CV = ifelse(Technical.CV > 100, NA, Technical.CV),
+           Technical.CV = ifelse(Technical.CV > 100, 100, Technical.CV), # cap CV at 100%
            Technical.CV = ifelse(is.nan(Technical.CV), NA, Technical.CV))
   
   CV <- bind_rows('MS' = ms_CV, 'Olink' = olink_CV, .id = 'Platform')

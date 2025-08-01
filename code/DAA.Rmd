@@ -38,6 +38,21 @@ if (!dir.exists(path)) {
 
 #### Read in data ####
 
+# Olink Explore data
+olink_data <- read_OlinkExplore_data(withControlSamples = FALSE,
+                                     withReplicateAssays = FALSE,
+                                     withBelowLOD = TRUE, # keep <LOD values
+                                     withQCWarning = TRUE, # keep proteins/samples with QC warning
+                                     removeAllLOD = TRUE) # remove proteins with all values <LOD 
+
+# Calculate percentage of LOD values per protein
+below_LOD <- olink_data %>% 
+  group_by(UniProt) |> 
+  summarize(Perc.below.LOD = sum(NPX < LOD)/n()*100)
+
+olink_data_wide <- olink_long_to_wide(olink_data, id_cols = 'UniProt')
+
+
 # Olink data with LOD values set to NA
 olink_data_clean <- read_OlinkExplore_data(withControlSamples = FALSE,
                                            withReplicateAssays = FALSE,
@@ -47,34 +62,36 @@ olink_data_clean <- read_OlinkExplore_data(withControlSamples = FALSE,
 
 olink_data_clean_wide <- olink_long_to_wide(olink_data_clean, id_cols = 'UniProt')
 
-# Olink data with no LOD values
-olink_noNA <- na.omit(olink_data_clean_wide)
+# Olink proteins with no values <LOD 
+olink_noBelowLOD <- na.omit(olink_data_clean_wide)
 
 
 # MS data
 ms_data <- read_MS_data(withIS = FALSE, # remove internal standards
-                        withReplicateSamples = FALSE) # remove replicate samples
+                        withReplicateSamples = FALSE) |> # remove replicate samples
+dplyr::select(all_of(colnames(olink_data_wide))) # select only overlapping samples
 
-
-# Calculate proportion of NAs per protein on full MS data set
-ms_data_all <- read_MS_data(withIS = FALSE, 
-                            withReplicateSamples = TRUE) 
-
-# Remove proteins with more than 50% missing values
-ms_max50NA <- na_omit_prop(ms_data_all, 0.5, ignore_cols = 'UniProt')
 # Remove proteins with any missing values
 ms_noNA <- na.omit(ms_data)
 
 # Overlapping proteins
-overlap_noNA <- intersect(olink_noNA$UniProt, ms_noNA$UniProt)
-length(overlap_noNA)
+overlap <- intersect(olink_data_wide$UniProt, ms_data$UniProt)
+length(overlap)
+
+# Proteins with no missing values in MS and values <LOD in Olink data
+overlap_no_missing <- intersect(olink_noBelowLOD$UniProt, ms_noNA$UniProt)
+length(overlap_no_missing)
+
+# Proteins with no truly missing values (NAs) - MS no missing vs. all Olink proteins
+overlap_no_NA <- intersect(olink_data_wide$UniProt, ms_noNA$UniProt)
+length(overlap_no_NA)
 
 # Metadata
 metadata <- read_metadata(withReplicates = FALSE, samples = 'overlapping')
 
 # Protein annotations
 protein_metadata <- read.csv('data/metadata/protein_metadata.csv') %>% 
-  filter(OlinkID %in% unique(olink_data_clean$OlinkID) | UniProt %in% ms_data$UniProt)
+  filter(OlinkID %in% unique(olink_data$OlinkID) | UniProt %in% ms_data$UniProt)
 
 # Color palette
 daa_pal <- setNames(c(TDP_palette[c(1,4, 13)], 'grey50'),
@@ -82,6 +99,7 @@ daa_pal <- setNames(c(TDP_palette[c(1,4, 13)], 'grey50'),
 
 
 ```
+
 
 ## Differential abundance analysis (DAA)
 
@@ -147,7 +165,7 @@ DAA <- function(ms_data, olink_data, test_grp, ref_grp, path, filename,
     pivot_wider(id_cols = UniProt,
                 names_from = Platform,
                 names_sep = '_',
-                values_from = c(statistic, log2FC, p.value, adj.p)) %>% 
+                values_from = c(statistic, log2FC, p.value, adj.p, n.total)) %>% 
     filter(!is.na(log2FC_MS) & !is.na(log2FC_Olink)) |>
     # Create column indicating which platform the protein is significant in
     mutate(Significance = case_when(adj.p_MS < 0.05 & adj.p_Olink < 0.05 ~ 'Both',
@@ -221,7 +239,10 @@ DAA <- function(ms_data, olink_data, test_grp, ref_grp, path, filename,
       fills = list(fill = TDP_palette[c(1,4)], alpha = 0.5), 
       edges = list(lwd = 2.5, col = TDP_palette[c(1,4)]),
       quantities = list(fontsize = 7, font = 'regular', fontfamily = 'Helvetica'), 
-      labels = list(fontsize = 8, font = 'regular', fontfamily = 'Helvetica'))
+      labels = list(fontsize = 8, font = 'regular', fontfamily = 'Helvetica'),
+      main = list(label = 'Differentially abundant proteins\n(Females vs. males)',
+                  cex = 8 / par('ps')))
+                  
   
     # Adjust plot to smaller size
     venn_diag$vp$width <- unit(0.8, "npc")
@@ -245,26 +266,40 @@ DAA <- function(ms_data, olink_data, test_grp, ref_grp, path, filename,
     summarize(Perc.agreement = mean(Agreement, na.rm = T) * 100)
   
   # Scatter plot of log2FC agreement (all proteins)
+  min_log2fc <- min(daa_res$log2FC, na.rm = TRUE)
+  max_log2fc <- max(daa_res$log2FC, na.rm = TRUE)
+  
+  cor_res <- cor.test(daa_res_wide$log2FC_MS, daa_res_wide$log2FC_Olink,
+  method = 'pearson')
+  
+  cor_label <- paste0('R = ', round(cor_res$estimate, 2))
+  
   log2fc_plot1 <- ggplot(
     daa_res_wide, aes(x = log2FC_MS, y = log2FC_Olink, color = Significance, alpha = Alpha)) +
     geom_point(size = 0.75) +
     geom_quadrant_lines(lwd = 0.3) +
     geom_abline(lwd = 0.3) +
-    geom_text_npc(
-      data = perc_agreement, 
-      aes(npcx = 0.65, npcy = 0.25, 
-          label = paste0(
-            "Categorical\nagreement: ", round(Perc.agreement), '%')),
-      hjust = 0, vjust = 1, size = 6/.pt) +
+    annotate(
+      'text_npc', npcx = 0.55, npcy = 0.15,
+      label = paste0(
+        "Directional\nagreement: ", round(perc_agreement$Perc.agreement), '%'),
+      hjust = 0, size = 6/.pt
+    ) +
+    annotate(
+      'text_npc', npcx = 0.55, npcy = 0.05,
+      label = cor_label, hjust = 0, size = 6/.pt
+    ) +
     scale_alpha_manual(values = c(0.4, 0.9), guide = 'none') +
     scale_color_manual(values = daa_pal) +
     labs(x = 'log2-fold change (MS)', 
          y = 'log2-fold change (Olink)',
          color = 'Significant in',
-         title = 'All overlapping proteins') +
+         title = 'All tested proteins') +
     theme_publ() +
-    theme(legend.position = 'top',
-          plot.margin = margin(t = 5.5, b = 5.5, l = 5.5, r = 6.5, 'pt'))
+    theme(legend.position = 'right',
+          legend.direction = 'vertical') +
+    coord_fixed(xlim = c(min_log2fc, max_log2fc), 
+                 ylim = c(min_log2fc, max_log2fc))
   
   # Percent agreement of log2FC values for significant proteins only
   sig_any <- daa_res_wide |> 
@@ -280,6 +315,13 @@ DAA <- function(ms_data, olink_data, test_grp, ref_grp, path, filename,
     mutate(Agreement = sign(MS) == sign(Olink)) |> 
     summarize(Perc.agreement = mean(Agreement, na.rm = T) * 100)
   
+  cor_res2 <- cor.test(
+    daa_res_wide$log2FC_MS[daa_res_wide$UniProt %in% sig_any],
+    daa_res_wide$log2FC_Olink[daa_res_wide$UniProt %in% sig_any],
+    method = 'pearson')
+  
+  cor_label2 <- paste0('R = ', round(cor_res2$estimate, 2))
+  
   # Scatter plot of log2FC agreement (significant proteins)
   log2fc_plot2 <- daa_res_wide |> 
     filter(UniProt %in% sig_any) |>
@@ -287,93 +329,177 @@ DAA <- function(ms_data, olink_data, test_grp, ref_grp, path, filename,
     scale_color_manual(values = daa_pal) +
     geom_quadrant_lines(lwd = 0.3) +
     geom_abline(lwd = 0.3) +
-    geom_text_npc(
-      data = perc_agreement2, 
-      aes(npcx = 0.65, npcy = 0.25, 
-          label = paste0(
-            "Categorical\nagreement: ", round(Perc.agreement), '%')),
-      hjust = 0, vjust = 1, size = 6/.pt) +
+    annotate(
+      'text_npc', npcx = 0.55, npcy = 0.15,
+      label = paste0(
+        "Directional\nagreement: ", round(perc_agreement2$Perc.agreement), '%'),
+      hjust = 0, size = 6/.pt
+    ) +
+    annotate(
+      'text_npc', npcx = 0.55, npcy = 0.05,
+      label = cor_label2, hjust = 0, size = 6/.pt
+    ) +
     labs(x = 'log2-fold change (MS)', 
          y = 'log2-fold change (Olink)',
          color = 'Significant in',
          title = 'Differentially abundant proteins') +
     theme_publ() +
-    theme(legend.position = 'none',
-          plot.margin = margin(t = 5.5, b = 5.5, l = 6.5, r = 5.5, 'pt'))
+    theme(legend.position = 'none') +
+    coord_fixed(xlim = c(min_log2fc, max_log2fc), 
+                 ylim = c(min_log2fc, max_log2fc))
     
   # Combine plots
   log2fc_plot <- (log2fc_plot1 + log2fc_plot2) + 
-    plot_layout(axis_titles = 'collect')
-  log2fc_plot <- guide_area() / log2fc_plot + 
-    plot_layout(heights = c(0.1,1), guides = 'collect') &
-    guides(color = guide_legend(override.aes = list(size = 1.5)))
+    plot_layout(axis_titles = 'collect', guides = 'collect') +
+    plot_annotation(title = 'Agreement of log2-fold change values',
+                    theme = theme(plot.title = element_text(hjust = 0.5, size = 8))) &
+    guides(color = guide_legend(override.aes = list(size = 1.5))) 
   
   ggsave(log2fc_plot,
          filename = paste0('DAA_sex_log2FC_agreement_', filename, '.pdf'),
          path = path,
          width = 12,
-         height = 6.5,
+         height = 6,
          units = 'cm')
   
   print(log2fc_plot)
   
   return(list('DAA_res' = daa_res,
-              'DAA_res_wide' = daa_res_wide))
-  
+              'DAA_res_wide' = daa_res_wide,
+              'volcano_plot' = volcano_plot,
+              'venn_diagram' = venn_diag,
+              'log2fc_plot' = log2fc_plot))
 }
 
 
 ```
 
 
-### Overlapping proteins - no missing values
+### All overlapping proteins
+
+```{r}
+
+daa_res_all_overlap <- DAA(
+  filter(ms_data, UniProt %in% overlap), 
+  filter(olink_data_wide, UniProt %in% overlap),
+  test_grp = female,
+  ref_grp = male,
+  path = path,
+  filename = 'all_overlappingProteins',
+  protein_metadata = protein_metadata)
+
+```
+
+
+Missing values in DAPs
+
+```{r}
+
+ms_NAs <- ms_data |> 
+  pivot_longer(cols = -UniProt, 
+               names_to = 'Sample.ID', 
+               values_to = 'Value') |>
+  group_by(UniProt) |> 
+  summarize(Missing.MS = sum(is.na(Value)),
+            Perc.Missing.MS = Missing.MS/n()*100)
+            
+missing_values <- ms_NAs |> 
+  full_join(below_LOD) |> 
+  filter(UniProt %in% overlap) |> 
+  pivot_longer(cols = c(Perc.below.LOD, Perc.Missing.MS),
+               names_to = 'Platform',
+               values_to = 'Missing.values') |>
+  mutate(Platform = ifelse(Platform == 'Perc.below.LOD', 'Olink', 'MS'),
+         Any.missing = Missing.values > 0) |>
+  left_join(daa_res_all_overlap$DAA_res_wide, 
+            by = 'UniProt') |> 
+  group_by(Platform, Significance) |>
+  summarize(Any.missing = sum(Any.missing),
+            Total = n(),
+            Perc.Any.missing = Any.missing/Total*100)
+            
+
+ggplot(missing_values, aes(x = Platform, y = Perc.Any.missing, fill = Significance)) +
+  geom_col(position = position_dodge(width = 0.91)) +
+  geom_text(
+      aes(label = paste0(round(Perc.Any.missing), '%')),
+      position = position_dodge(width = 0.9),
+      vjust = -0.5, size = 6/.pt, hjust = 0.5
+    ) +
+  theme_publ() +
+  scale_color_manual(values = daa_pal, aesthetics = c('fill', 'color')) +
+  scale_y_continuous(expand = expansion(mult = c(0, 0.1))) +
+  labs(x = 'Platform', y = 'Proteins with missing values (%)',
+       fill = 'Significant in', title = 'Missing values by significance in DAA') +
+  theme(legend.position = 'right')
+
+```
+```{r}
+
+ggsave(filename = 'DAPs_missing_values.pdf',
+       path = path,
+       width = 8.7,
+       height = 6,
+       units = 'cm')
+
+```
+
+
+
+### Overlapping proteins - no missing values / values <LOD
+
+```{r}
+
+daa_res_no_missing_overlap <- DAA(
+  filter(ms_noNA, UniProt %in% overlap_no_missing),
+  filter(olink_noBelowLOD, UniProt %in% overlap_no_missing),
+  test_grp = female,
+  ref_grp = male,
+  path = path,
+  filename = 'noMissing_overlappingProteins',
+  protein_metadata = protein_metadata)
+
+```
+
+
+### Overlapping proteins - no NAs (no missing values in MS, all Olink proteins)
 
 ```{r}
 
 daa_res_noNA_overlap <- DAA(
-  filter(ms_noNA, UniProt %in% overlap_noNA),
-  filter(olink_noNA, UniProt %in% overlap_noNA),
+  filter(ms_noNA, UniProt %in% overlap_no_NA),
+  filter(olink_data_wide, UniProt %in% overlap_no_NA),
   test_grp = female,
   ref_grp = male,
   path = path,
   filename = 'noNA_overlappingProteins',
   protein_metadata = protein_metadata)
 
+
 ```
 
 
-### Technical CVs by significance in DAA
+## Technical CVs by significance in DAA
 
 ```{r}
 
 technical_CVs <- read.csv('results/CV_analysis/technical_CVs.csv')
 
-hpa_data <- read.delim('data/processed_data/HPA_v24_clean.txt')
-
-conc_data <- hpa_data %>% 
-  filter(!is.na(Blood.conc.ngmL)) %>% 
-  distinct(Uniprot, Blood.conc.IM.pgL, Blood.conc.MS.pgL, .keep_all = TRUE) |> 
-  dplyr::select(Uniprot, Blood.conc.MS.pgL, Blood.conc.IM.pgL, Blood.conc.ngmL)
-
-daa_res_noNA_overlap_wide <- daa_res_noNA_overlap$DAA_res_wide |> 
+daa_res_all_overlap_wide <- daa_res_all_overlap$DAA_res_wide |> 
   left_join(technical_CVs |> 
+              filter(UniProt %in% overlap) |> 
               pivot_wider(id_cols = c(UniProt, Gene.Name),
                           names_from = Platform,
                           values_from = Technical.CV) |> 
               dplyr::rename(Technical.CV_MS = MS, Technical.CV_Olink = Olink),
-            by = 'UniProt') |>
-  left_join(conc_data, by = join_by(UniProt == Uniprot))
+            by = 'UniProt')
 
-```
+set.seed(1)
 
-Technical CV by significance:
-
-```{r}
-
-plot_data <- daa_res_noNA_overlap_wide |> 
+plot_data <- daa_res_all_overlap_wide |> 
   filter(Significance != 'None', !is.na(Technical.CV_MS), !is.na(Technical.CV_Olink))
 
-p1 <- ggplot.jitterbox(plot_data, Significance, Technical.CV_MS) +
+p1 <- ggplot.jitterbox(plot_data, Significance, Technical.CV_MS, show.legend = F) +
   stat_compare_means(comparisons = list(c('MS only', 'Olink only'), c('Both', 'Olink only')),
                      label.y = c(30, 33), size = 6/.pt, tip.length = 0.01,
                      label = 'p.signif') +
@@ -381,18 +507,17 @@ p1 <- ggplot.jitterbox(plot_data, Significance, Technical.CV_MS) +
   labs(x = 'Significant in', y = 'Technical CV (MS)') 
   
 
-p2 <- ggplot.jitterbox(plot_data, Significance, Technical.CV_Olink) +
+p2 <- ggplot.jitterbox(plot_data, Significance, Technical.CV_Olink, show.legend = F) +
   ylim(c(0,35)) +
   stat_compare_means(comparisons = list(c('MS only', 'Olink only'), c('Both', 'MS only')),
                      label.y = c(30, 33), size = 6/.pt, tip.length = 0.01,
                      label = 'p.signif') +
   labs(x = 'Significant in', y = 'Technical CV (Olink)') 
 
-p1 + p2 + plot_layout(guides = 'collect') &
-  theme_publ() &
-  theme(legend.position = 'top') &
-  scale_color_manual(values = daa_pal, aesthetics = c('fill', 'color'))
-  
+p1 + p2 +
+  plot_annotation(title = 'Technical CVs by significance in DAA',
+                  theme = theme(plot.title = element_text(size = 8, hjust = 0.2))) &
+  scale_color_manual(values = daa_pal, aesthetics = c('fill', 'color')) 
 
 ```
 
@@ -401,76 +526,17 @@ p1 + p2 + plot_layout(guides = 'collect') &
 ggsave(filename = 'technical_CV_by_significance.pdf',
        path = path,
        width = 8.7,
-       height = 6.5,
-       units = 'cm')
-
-```
-
-### Fold change by significance in DAA
-
-```{r}
-
-plot_data <- daa_res_noNA_overlap_wide |> 
-  filter(Significance != 'None') |> 
-  mutate(absFC_MS = abs(log2FC_MS),
-         absFC_Olink = abs(log2FC_Olink))
-
-p1 <- ggplot.jitterbox(plot_data, Significance, absFC_MS) +
-  stat_compare_means(comparisons = list(c('MS only', 'Olink only'), c('Both', 'Olink only')),
-                     size = 6/.pt, tip.length = 0.01, label = 'p.signif') +
-  labs(x = 'Significant in', y = 'log2-fold change (MS)') 
-  
-
-p2 <- ggplot.jitterbox(plot_data, Significance, absFC_Olink) +
-  stat_compare_means(comparisons = list(c('MS only', 'Olink only'), c('Both', 'MS only')),
-                     size = 6/.pt, tip.length = 0.01, label = 'p.signif') +
-  labs(x = 'Significant in', y = 'log2-fold change (Olink)') 
-
-p1 + p2 + plot_layout(guides = 'collect') &
-  theme_publ() &
-  theme(legend.position = 'top') &
-  scale_color_manual(values = daa_pal, aesthetics = c('fill', 'color'))
-  
-
-```
-
-```{r}
-
-ggsave(filename = 'log2FC_vs_significance.pdf',
-       path = path,
-       width = 8.7,
-       height = 6.5,
-       units = 'cm')
-
-```
-
-
-### Fold change comparison
-
-
-```{r}
-
-daa_res_noNA_overlap$DAA_res_wide %>% 
-  pivot_longer(cols = c(log2FC_MS, log2FC_Olink),
-               names_to =  c('.value', 'Platform'),
-               names_sep = '_') %>% 
-  ggplot.density(log2FC, Fill_var = Platform, median_text = F, median_line = F) +
-  scale_fill_manual(values = TDP_palette[c(1,4)], aesthetics = c('color', 'fill')) +
-  theme_publ() +
-  labs(title = '', x = 'log2-fold change')
-
-
-ggsave(filename = 'log2FC_density_noNA_overlappingProteins.pdf',
-       path = path,
-       width = 8.7,
        height = 6,
        units = 'cm')
 
 ```
 
+
+## Fold change comparison
+
 ```{r}
 
-daa_res_noNA_overlap$DAA_res_wide %>% 
+daa_res_all_overlap$DAA_res_wide %>% 
   filter(Significance != 'None') %>% 
   pivot_longer(cols = c(log2FC_MS, log2FC_Olink),
                names_to =  c('.value', 'Platform'),
@@ -478,50 +544,35 @@ daa_res_noNA_overlap$DAA_res_wide %>%
   ggplot.density(log2FC, Fill_var = Platform, median_text = F, median_line = F) +
   scale_fill_manual(values = TDP_palette[c(1,4)], aesthetics = c('color', 'fill')) +
   theme_publ() +
-  labs(title = '', x = 'log2-fold change')
+  labs(x = 'log2-fold change', title = 'Log2-fold change of DAPs by platform')
 
 
-ggsave(filename = 'log2FC_density_noNA_overlappingProteins_sig.pdf',
+ggsave(filename = 'DAPs_log2FC_density.pdf',
        path = path,
        width = 8.7,
-       height = 6.5,
+       height = 6,
        units = 'cm')
 
-```
 
+```
 
 
 ## Estimated concentration of DAPs
 
-
-### Overlapping proteins - no missing values
-
 ```{r}
 
-daa_res_conc_overlap <- daa_res_noNA_overlap$DAA_res |> 
-  filter(adj.p < 0.05) %>% 
-  inner_join(conc_data, by = join_by(UniProt == Uniprot))
+hpa_data <- read.delim('data/processed_data/HPA_v24_clean.txt')
 
-ggplot.jitterbox(daa_res_conc_overlap, Platform, Blood.conc.ngmL) +
-  scale_y_log10() +
-  small_logticks('l') +
-  stat_compare_means(size = 6/.pt, label.y = 5.5) +
-  scale_color_manual(values = TDP_palette[c(1,4)], aesthetics = c('fill', 'color')) +
-  labs(y = 'Concentration in blood (ng/mL)')
+conc_data <- hpa_data %>% 
+  filter(!is.na(Blood.conc.ngmL)) %>% 
+  distinct(Uniprot, Blood.conc.IM.pgL, Blood.conc.MS.pgL, .keep_all = TRUE) |> 
+  dplyr::select(Uniprot, Blood.conc.MS.pgL, Blood.conc.IM.pgL, Blood.conc.ngmL)
 
-```
-
-
-
-Overlapping proteins:
-
-```{r}
-
-dens_data <- daa_res_noNA_overlap$DAA_res  |> 
+dens_data <- daa_res_all_overlap$DAA_res  |> 
   filter(Significance == 'S') |>
   inner_join(conc_data, by = c('UniProt' = 'Uniprot'))
 
-plot_data <- daa_res_noNA_overlap$DAA_res_wide  |> 
+plot_data <- daa_res_all_overlap$DAA_res_wide  |> 
   filter(Significance != 'None') |> 
   inner_join(conc_data, by = c('UniProt' = 'Uniprot')) |> 
   mutate(Significance = droplevels(Significance))
@@ -532,6 +583,7 @@ stat_test <- wilcox_test(
   add_xy_position(y.trans = log10)
 
 set.seed(1)
+
 plot_data |> 
   ggplot(aes(x = Significance, y = Blood.conc.ngmL)) +
   geom_jitter(aes(color = Significance), alpha = 0.8, width = 0.3, size = 0.5) +
@@ -539,12 +591,12 @@ plot_data |>
   scale_y_log10(labels = log10_format(), breaks = 10^seq(-1,9,2)) +
   small_logticks('l') +
   labs(x = 'Significant in', 
-       y = 'Concentration in blood (ng/mL)') +
+       y = 'Concentration in blood (ng/mL)',
+       title = 'Estimated concentration of DAPs') +
   scale_fill_manual(values = daa_pal,
                     aesthetics = c('color', 'fill')) +
   theme_publ() +
-  theme(legend.position = 'right',
-        ggside.axis.line = element_blank(),
+  theme(ggside.axis.line = element_blank(),
         ggside.axis.ticks = element_blank(),
         ggside.axis.text = element_blank(),
         ggside.panel.scale.y = 0.2) +
@@ -557,16 +609,229 @@ plot_data |>
                      bracket.nudge.y = 0.5)
 
 
-ggsave(filename = 'DAPs_by_conc_boxplot_noNA_overlappingProteins.pdf',
+ggsave(filename = 'DAPs_by_conc_boxplot.pdf',
        path = path,
        width = 8.7,
        height = 6,
        units = 'cm')
 
 
+```
+
+
+## Replication of DAPs in other data sets
+
+
+### All overlapping proteins
+
+```{r}
+
+calculate_replication <- function(my_data, external_data) {
+  # my_data should have columns UniProt, Platform, Significance, and Difference
+  # external_data should have columns UniProt, Significance, and Difference
+  # difference is assumed to be with positive value = higher in males
+  # proteins with duplicate assays in external_data are considered as replicated
+  # if any of the assays are replicated
+  
+  my_data |> 
+    filter(Significance == 'S') |> 
+    left_join(external_data, by = 'UniProt', suffix = c('_Sissala', '_External')) |>
+    group_by(UniProt) |>  # handle duplicated proteins in external data
+    summarize(
+      Platform = unique(Platform),
+      Testable = any(!is.na(Significance_External)),
+      DAP.in.both = any(Significance_Sissala == 'S' & Significance_External == 'S'),
+      Same.direction = any(sign(Difference_Sissala) == sign(Difference_External)),
+      Fully.replicated = any(DAP.in.both & Same.direction)
+    ) |> 
+    filter(Testable) |>
+    group_by(Platform) |>
+    summarize(
+      Testable.DAPs = sum(Testable),
+      DAP.in.both = sum(DAP.in.both),
+      Replication.rate = DAP.in.both / sum(Testable.DAPs) * 100,
+      Same.direction = sum(Same.direction),
+      Replicated.direction.rate = Same.direction / sum(Testable.DAPs) * 100,
+      Fully.replicated = sum(Fully.replicated),
+      Fully.replicated.rate = Fully.replicated / sum(Testable.DAPs) * 100,
+      .groups = 'drop'
+    )
+}
+
+
+# Prepare data for replication analysis
+my_data_all_overlapping <- daa_res_all_overlap$DAA_res |> 
+  mutate(log2FC = log2FC * -1) |>  # ensure male is positive
+  dplyr::select(UniProt, Platform, Significance, Difference = log2FC)
+
+
+koprulu <- readxl::read_excel('data/external_data/41467_2025_59034_MOESM3_ESM.xlsx',
+                              sheet = 2, skip = 1) |> 
+  mutate(across(where(is.character), ~na_if(., 'NA')),
+         across(c(starts_with('beta'), starts_with('pval'), starts_with('se')),
+                   as.numeric))
+
+koprulu_soma <- koprulu |> 
+  filter(!is.na(beta.SL)) |> 
+  dplyr::select(UniProt, beta.SL, se.SL, pval.SL) |> 
+  distinct() |> 
+  mutate(Adj.p = p.adjust(pval.SL, method = 'fdr'),
+         Significance = ifelse(Adj.p < 0.05, 'S', 'NS')) |> 
+  dplyr::select(UniProt, Difference = beta.SL, Significance)
+         
+          
+koprulu_olink <- koprulu |> 
+  filter(!is.na(beta.OL)) |> 
+  dplyr::select(UniProt, beta.OL, se.OL, pval.OL) |> 
+  distinct() |> 
+  mutate(Adj.p = p.adjust(pval.OL, method = 'fdr'),
+         Significance = ifelse(Adj.p < 0.05, 'S', 'NS')) |>
+  dplyr::select(UniProt, Difference = beta.OL, Significance)
+
+
+
+zhong_daps <- readxl::read_excel('data/external_data/41467_2021_22767_MOESM6_ESM.xlsx',
+                            skip = 3) 
+
+zhong_all <- readxl::read_excel('data/external_data/41467_2021_22767_MOESM4_ESM.xlsx',
+                                skip = 2)
+
+zhong <- zhong_all |> 
+  left_join(zhong_daps, by = 'Protein') |> 
+  dplyr::select(UniProt, Difference = `Log2FC (male/female)`, Significance = `P-value`) |> 
+  mutate(Significance = ifelse(is.na(Significance) | Significance  >= 0.05, 'NS', 'S'))
+
+
+dordevic <- readxl::read_excel('data/external_data/43856_2025_856_MOESM4_ESM.xlsx') |> 
+  dplyr::select(UniProt = Uniprot, Difference = coef_SexWomen, pval = p.value_SexWomen) |> 
+  separate_longer_delim(cols = UniProt, delim = ';') |> 
+  mutate(Difference = Difference * -1, # ensure male is positive
+         Adj.p = p.adjust(pval, method = 'fdr'),
+         Significance = ifelse(Adj.p < 0.05, 'S', 'NS')) |> 
+  distinct()
+  
+```
+
+```{r}
+
+input <- list(
+  'Koprulu.Soma' = koprulu_soma,
+  'Koprulu.Olink' = koprulu_olink,
+  'Zhong.Olink' = zhong,
+  'Dordevic.MS' = dordevic
+)
+
+repl_all_overlapping <- lapply(input, calculate_replication, my_data = my_data_all_overlapping) |> 
+  bind_rows(.id = 'Dataset')
+
+repl_all_overlapping
+
+```
+
+```{r}
+
+plot_replication <- function(results) {
+  
+  results |> 
+    mutate(
+      Dataset = case_when(
+      Dataset == 'Koprulu.Soma' ~ 'Koprulu et al. (SomaScan)',
+      Dataset == 'Koprulu.Olink' ~ 'Koprulu et al. (Olink)',
+      Dataset == 'Zhong.Olink' ~ 'Zhong et al. (Olink)',
+      Dataset == 'Dordevic.MS' ~ 'Dordevic et al. (MS)'
+      )) |>
+    ggplot.barplot(Dataset, Fully.replicated.rate, Fill_var = Platform, position = 'dodge') +
+    # add N above bars
+    geom_text(
+      aes(label = paste0(round(Fully.replicated.rate), '%')),
+      position = position_dodge(width = 0.9),
+      vjust = -0.5, size = 6/.pt, hjust = 0.5
+    ) +
+    scale_fill_manual(values = TDP_palette[c(1,4)]) +
+    theme_publ() +
+    labs(title = 'Replication of DAPs in other data sets',
+         x = 'Dataset', y = 'Replication rate (%)')  +
+    scale_y_continuous(expand = expansion(mult = c(0, 0.1))) 
+    
+}
+
+
+p1 <- plot_replication(repl_all_overlapping) +
+  labs(subtitle = 'All overlapping proteins (N = 1129)') 
+
+p1
+
+
+```
+
+```{r}
+
+ggsave(filename = 'replication_of_DAPs_all_overlappingProteins.pdf',
+       path = path,
+       width = 12,
+       height = 6.5,
+       units = 'cm')
 
 ```
 
 
+### Overlapping proteins - no missing values
+
+```{r}
+
+# Prepare data for replication analysis
+my_data_no_missing <- daa_res_no_missing_overlap$DAA_res |> 
+  mutate(log2FC = log2FC * -1) |>  # ensure male is positive
+  dplyr::select(UniProt, Platform, Significance, Difference = log2FC)
+
+
+repl_no_missing <- lapply(input, calculate_replication, my_data = my_data_no_missing) |> 
+  bind_rows(.id = 'Dataset')
+
+repl_no_missing
+
+```
+
+
+```{r}
+
+p2 <- plot_replication(repl_no_missing) +
+  labs(subtitle = 'No missing values (N = 569)')
+
+p2
+
+```
+
+
+```{r}
+
+ggsave(filename = 'replication_of_DAPs_noMissing_overlappingProteins.pdf',
+       path = path,
+       width = 12,
+       height = 6.5,
+       units = 'cm')
+
+```
+
+
+```{r}
+
+(p1 + theme(plot.margin = margin(l = 10, r = 5.5, b = 5.5, t = 5.5))) + 
+  (p2 + labs(title = '')) +
+  guide_area() +
+  plot_layout(guides = 'collect', widths = c(1,1,0.1)) &
+  theme(axis.text.x = element_text(angle = 20, hjust = 1),
+        legend.direction = 'vertical')
+
+```
+```{r}
+
+ggsave(filename = 'replication_of_DAPs.pdf',
+       path = path,
+       width = 12,
+       height = 7,
+       units = 'cm')
+
+```
 
 

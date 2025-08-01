@@ -418,7 +418,6 @@ ggplot.corrplot <- function(data, X_var, Y_var, Color_var = NULL, Facet_var = NU
   params <- list(...)
   point_params <- modifyList(list(alpha = 0.6), params)
   point_params$size <- coalesce(point_params$size, 0.5)
-  reg_line_params <- modifyList(list(method = 'lm', formula = y ~ x, se = TRUE), reg_line_params)
   reg_line_params$color <- coalesce(reg_line_params$color, 'steelblue')
   reg_line_params$lwd <- coalesce(reg_line_params$lwd, 0.5)
   xlab <- coalesce(xlab, as_label(X_var))
@@ -426,40 +425,40 @@ ggplot.corrplot <- function(data, X_var, Y_var, Color_var = NULL, Facet_var = NU
   title <- coalesce(title, str_glue("{X_var}-{Y_var} correlation"))
   
   # Create correlation labels to add to the plot
+  n_methods <- length(cor_method)
+  y_positions <- seq(0.95, 0.95 - 0.05 * (n_methods - 1), by = -0.05)
+  
   correlation_labels <- NULL
   
-  for (m in cor_method) {
+  for (i in seq_along(cor_method)) {
     
-    correlation_labels <- bind_rows(
-      correlation_labels,
-      data %>%
-        group_by({{Facet_var}}) %>% # Group data if desired
-        reframe(enframe(
-          my.cor.test({{X_var}}, {{Y_var}}, # Calculate correlation
-                      cor_method = m)[c('Correlation', 'P.value')],
-          name = 'Variable', value = 'Value')) %>%
-          mutate(Value = as.numeric(Value),
-                 Value = case_when(
-                   Variable == 'Correlation' ~ round(Value, cor_coef_digits),
-                   Variable == 'P.value' ~ round(Value, 3))) %>% 
-          pivot_wider(id_cols = {{Facet_var}},
-                      names_from = Variable,
-                      values_from = Value) %>% 
-          group_by({{Facet_var}}) %>% 
-          mutate(Label = case_when( # Create correlation labels
-            m == 'pearson' & P.value < 0.001 ~ str_glue("Pearson's R = {Correlation}, p < 0.001"),
-            m == 'pearson' & P.value >= 0.001 ~ str_glue("Pearson's R = {Correlation}, p = {P.value}"),
-            m == 'spearman' & P.value < 0.001 ~ str_glue("Spearman's \u03C1 = {Correlation}, p < 0.001"),
-            m == 'spearman' & P.value >= 0.001 ~ str_glue("Spearman's \u03C1 = {Correlation}, p = {P.value}"))) %>% 
-          dplyr::select({{Facet_var}}, Label)
-    )
-    }
+    m <- cor_method[i]
+    
+    correlation_labels[[i]] <- data %>%
+      group_by({{Facet_var}}) %>% # Group data if desired
+      reframe(enframe(
+        my.cor.test({{X_var}}, {{Y_var}}, # Calculate correlation
+                    cor_method = m)[c('Correlation', 'P.value')],
+        name = 'Variable', value = 'Value')) %>%
+      mutate(Value = as.numeric(Value),
+             Value = ifelse(Variable == 'Correlation', round(Value, cor_coef_digits), Value),
+             Value = ifelse(Variable == 'P.value', round(Value, 3), Value)) %>%
+      pivot_wider(id_cols = {{Facet_var}},
+                  names_from = Variable,
+                  values_from = Value) %>% 
+      group_by({{Facet_var}}) %>% 
+      mutate(Label = case_when( # Create correlation labels
+        m == 'pearson' & P.value < 0.001 ~ str_glue("Pearson's R = {Correlation}, p < 0.001"),
+        m == 'pearson' & P.value >= 0.001 ~ str_glue("Pearson's R = {Correlation}, p = {P.value}"),
+        m == 'spearman' & P.value < 0.001 ~ str_glue("Spearman's \u03C1 = {Correlation}, p < 0.001"),
+        m == 'spearman' & P.value >= 0.001 ~ str_glue("Spearman's \u03C1 = {Correlation}, p = {P.value}")),
+        npcx = label_hpos,
+        npcy = y_positions[i]) %>% 
+      dplyr::select({{Facet_var}}, Label, npcx, npcy)
+  }
   
-  label_df <- correlation_labels %>% 
-    group_by({{Facet_var}}) %>%
-    summarise(x = label_hpos, y = 'top', # Coordinates for positioning label on plot
-              Label = paste(Label, collapse = '\n'))
-  
+  correlation_labels <- bind_rows(correlation_labels)
+    
   # Add facet if applicable
   if (!is.null(Facet_var)) {
     facet <- facet_wrap(vars({{Facet_var}}), scales = facet_scales)
@@ -474,7 +473,7 @@ ggplot.corrplot <- function(data, X_var, Y_var, Color_var = NULL, Facet_var = NU
     # Scatter plot
     do.call(ifelse(density == FALSE, 'geom_point', 'geom_pointdensity'), point_params) +
     # Add correlation coefficient
-    geom_text_npc(data = label_df, mapping = aes(npcx = x, npcy = y, label = Label),
+    geom_text_npc(data = correlation_labels, mapping = aes(npcx = npcx, npcy = npcy, label = Label),
                   lineheight = 1, size = 6/.pt) +
     # Add regression line
     do.call('geom_smooth', reg_line_params) +
@@ -596,6 +595,14 @@ log10_format <- function(x) {
 }
 
 
+format_pval_label <- function(p) {
+  if (p >= 0.001) {
+    paste0("p == ", sprintf("%.3f", p))
+  } else {
+    paste0("p == ", gsub("e", " %*% 10^", sprintf("%.2e", p)))
+  }
+}
+
 ##### Project-specific plots #####
 
 cor_hist <- function(data, table_y, table_x = -0.75, median_y = 0.55, 
@@ -620,7 +627,7 @@ cor_hist <- function(data, table_y, table_x = -0.75, median_y = 0.55,
   data |> 
     filter(!is.na(Correlation)) |> 
     ggplot(aes(x = Correlation, fill = Cor.interval)) +
-    geom_histogram(binwidth = 0.1, alpha = 0.9, boundary = 0, size = 0.3, color = 'grey20',
+    geom_histogram(binwidth = 0.05, alpha = 0.9, boundary = 0, size = 0.3, color = 'grey20',
                    closed = 'left', pad = TRUE) +
     geom_vline(aes(xintercept = median(Correlation)), 
                lwd = 0.3, color = 'grey20', linetype = 'dashed') +

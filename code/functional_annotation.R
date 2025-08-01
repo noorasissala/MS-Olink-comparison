@@ -31,7 +31,13 @@ if (!dir.exists(path)) {
 ms_data <- read_MS_data()
 
 # Olink Explore data
-olink_data <- read_OlinkExplore_data()
+olink_data <- read_OlinkExplore_data(
+  withControlSamples = FALSE,
+  withBelowLOD = TRUE,
+  withQCWarning = TRUE,
+  withReplicateAssays = FALSE, # one assay per UniProt ID
+  removeAllLOD = TRUE # include only detected proteins
+)
 
 # Olink Explore data in wide format
 olink_data_wide <- olink_long_to_wide(olink_data, id_cols = 'UniProt')
@@ -283,6 +289,14 @@ hpa_ann_freq <- setNames(
          olink_ann = hpa_olink), 
   cols)
 
+# Capitalize abbreviations in term names for plotting
+hpa_ann_freq <- lapply(
+  hpa_ann_freq, function (x) {
+    x |> mutate(Annotation = str_replace(Annotation, 'Fda', 'FDA'),
+                Annotation = str_replace(Annotation, 'Cd', 'CD'))
+  }
+)
+
 hpa_ann_freq_df <- do.call(rbind.data.frame, hpa_ann_freq)
 
 write.csv(hpa_ann_freq_df, paste0(path, '/HPA_ann_frequencies.csv'),
@@ -388,12 +402,13 @@ plot.enr.dotplot <- function(enr_res, showCategory = 10) {
     
     # Plot results
     p <- ggplot(dat, aes(x = foldEnr, y = reorder(Description, Order), 
-                         fill = Count)) +
+                         fill = GeneRatio2)) +
       geom_point(shape = 21, size = 1.8, color = 'grey30', stroke = 0.2) +
       scale_fill_gradientn(colors = rev(brewer.pal(5, 'Spectral'))) +
-      labs(x = 'Fold enrichment', y = '') +
+      labs(x = 'Fold enrichment', y = '', fill = 'Protein ratio') +
       theme_publ() +
-      theme(legend.key.width = unit(1, 'cm')) +
+      theme(legend.key.width = unit(1, 'cm'),
+            legend.title = element_text(vjust = 0.9)) +
       facet +
       format_facet
     
@@ -405,7 +420,9 @@ GO_res_BP <- GO.analysis(input_list = input_list,
                          ont = 'BP')
 
 # Result data frame
-GO_res_BP_df <- as.data.frame(GO_res_BP)
+GO_res_BP_df <- as.data.frame(GO_res_BP) |> 
+  dplyr::rename(Platform = Cluster)
+
 write.csv(GO_res_BP_df, file.path(path, 'GO_BP_res.csv'))
 
 # Plot venn diagram of enriched GO terms
@@ -577,15 +594,17 @@ write.csv(biomarkers_table, file.path(path, 'FDA_biomarkers_table.csv'))
 ###### Prepare data ######
 
 # MS data
-ms_data_all <- read_MS_data(withReplicateSamples = TRUE)
-ms_data_max50NA <- na_omit_prop(ms_data_all, 0.5, ignore_cols = 'UniProt')
+# Ccalculated 50% out of 88 overlapping samples, not all 120
+ms_data_overlap <- ms_data |> dplyr::select(all_of(colnames(olink_data_wide)))
+ms_data_max50NA <- na_omit_prop(ms_data_overlap, 0.5, ignore_cols = 'UniProt')
 
-# Olink Explore data
-olink_data_LOD <- read_OlinkExplore_data(withBelowLOD = FALSE,
-                                         removeAllLOD = TRUE)
-olink_data_wide_LOD <- olink_long_to_wide(olink_data_LOD, id_cols = 'UniProt')
-olink_data_wide_max50NA <- na_omit_prop(
-  olink_data_wide_LOD, 0.5, ignore_cols = 'UniProt')
+# Olink Explore data - max 50% values <LOD
+below_LOD <- olink_data |> 
+  group_by(UniProt) |> 
+  summarise(N.Below.LOD = sum(NPX < LOD, na.rm = T),
+            Percent.Below.LOD = N.Below.LOD / n() * 100)
+olink_data_wide_max50NA <- olink_data_wide |> 
+  filter(UniProt %in% filter(below_LOD, Percent.Below.LOD <= 50)$UniProt)
 
 # Vectors of protein IDs
 ms_proteins_max50NA <- unique(ms_data_max50NA$UniProt)
@@ -673,7 +692,9 @@ GO_res_BP_max50NA <- GO.analysis(input_list = input_list_max50NA,
 
 
 # Result data frame
-GO_res_BP_max50NA_df <- as.data.frame(GO_res_BP_max50NA)
+GO_res_BP_max50NA_df <- as.data.frame(GO_res_BP_max50NA) |> 
+  dplyr::rename(Platform = Cluster)
+
 write.csv(GO_res_BP_max50NA_df, file.path(path, 'GO_BP_res_max50NA.csv'))
 
 # Plot venn diagram of enriched GO terms
