@@ -353,7 +353,6 @@ GO.analysis <- function(input_list, background, ont = c('ALL', 'BP', 'MF', 'CC')
     rowwise() %>% 
     mutate(GeneRatio2 = eval(parse_expr(GeneRatio)), # calculate GeneRatio
            BgRatio2 = eval(parse_expr(BgRatio)), # calculate BgRatio
-           foldEnr = GeneRatio2/BgRatio2, # calculate fold enrichment
            Enriched = case_when(ID %in% overlapping_IDs ~ 'Both',
                                 !ID %in% overlapping_IDs & Cluster == 'MS' ~ 'MS',
                                 !ID %in% overlapping_IDs & Cluster == 'Olink' ~ 'Olink'),
@@ -397,11 +396,11 @@ plot.enr.dotplot <- function(enr_res, showCategory = 10) {
     # Filter results
     dat <- enr_res@compareClusterResult %>% 
       filter(ID %in% top) %>% 
-      arrange(desc(Cluster), foldEnr) %>% 
+      arrange(desc(Cluster), FoldEnrichment) %>% 
       mutate(Order = row_number()) 
     
     # Plot results
-    p <- ggplot(dat, aes(x = foldEnr, y = reorder(Description, Order), 
+    p <- ggplot(dat, aes(x = FoldEnrichment, y = reorder(Description, Order), 
                          fill = GeneRatio2)) +
       geom_point(shape = 21, size = 1.8, color = 'grey30', stroke = 0.2) +
       scale_fill_gradientn(colors = rev(brewer.pal(5, 'Spectral'))) +
@@ -421,7 +420,8 @@ GO_res_BP <- GO.analysis(input_list = input_list,
 
 # Result data frame
 GO_res_BP_df <- as.data.frame(GO_res_BP) |> 
-  dplyr::rename(Platform = Cluster)
+  dplyr::rename(Platform = Cluster,
+                UniProt = geneID)
 
 write.csv(GO_res_BP_df, file.path(path, 'GO_BP_res.csv'))
 

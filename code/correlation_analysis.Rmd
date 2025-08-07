@@ -3358,3 +3358,36 @@ ggsave(filename = 'MS-Olink_cor_vs_Nisoforms.pdf',
 
 ```
 
+
+## Correlations between different isoforms
+
+
+```{r}
+
+# MS data with gene names
+ms_data2 <- ms_data |> 
+  left_join(protein_metadata[c('UniProt', 'Gene.Name')], by = 'UniProt')
+
+# Olink data with gene names
+olink_data_wide2 <- olink_data_wide |>
+  left_join(protein_metadata[c('UniProt', 'Assay')], by = 'UniProt')
+
+# Correlation between different isoforms (proteins matched by gene name)
+gene_cors <- suppressWarnings(
+  cor.test.df(ms_data2, olink_data_wide2, match_by = c('Gene.Name', 'Assay'),
+            cor_type = 'rowwise', cor_method = 'spearman', cols_to_keep = c('UniProt'))) |> 
+  dplyr::rename(UniProt_MS = UniProt.x, 
+                UniProt_Olink = UniProt.y)
+
+# Filter out correlations between different isoforms
+isoforms <- filter(gene_cors, UniProt_MS != UniProt_Olink) |> pull(Gene.Name)
+isoforms <- filter(gene_cors, Gene.Name %in% isoforms) |> 
+  arrange(Gene.Name, UniProt_MS)
+
+write.csv(isoforms, file.path(path, 'isoform_correlations.csv'), row.names = FALSE)
+
+```
+
+
+
+
