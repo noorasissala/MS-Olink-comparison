@@ -225,7 +225,7 @@ Load data from the Human Plasma Proteome Project (HPPP) (PeptideAtlas build 2023
 ```{r}
 
 # Load data on the plasma proteome (from HPPP build 2023-04)
-hppp <- read.csv('data/external_data/query_guest_20240404-183407-615.csv')
+hppp <- read.csv('data/external_data/HPPP_build2023-04.csv')
 hppp <- hppp$biosequence_accession
 
 ```

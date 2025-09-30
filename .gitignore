@@ -13,9 +13,10 @@ data/metadata/*
 data/external_data/*
 data/processed_data/*
 
-# Except files needed for visualization of peptide-level correlations
+# Except files needed for visualization of peptide-level correlations and a list of Human Plasma PeptideAtlas proteins
 !data/processed_data/plasma_data_FASTA3.RDS
 !data/processed_data/peptide_seq_list2.RDS
+!data/external_data/HPPP_build2023-04.csv
 
 # Keep the folders themselves
 !data/raw_data/.gitkeep
