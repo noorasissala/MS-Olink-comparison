@@ -567,7 +567,7 @@ tryCatch( {
   p$vp$width <- unit(0.95, "npc")
   p$vp$height <- unit(0.95, "npc")
   
-  p
+  grid::grid.draw(p)
   
   dev.off()
   
