@@ -45,11 +45,7 @@ protein_metadata_MS <- proteins |>
   dplyr::select(-Gene.ID, -Protein.ID)
 
 # Select quant columns
-proteins <- dplyr::select(proteins, UniProt, starts_with(c('X', 'IS'), ignore.case = FALSE))
-
-# Change column names to sample IDs
-ids <- metadata$Sample.ID[match(colnames(proteins)[-1], metadata$MS.ID)]
-colnames(proteins) <- c('UniProt', ids)
+proteins <- dplyr::select(proteins, UniProt, starts_with(c('S', 'IS'), ignore.case = FALSE))
 
 # Remove proteins with NA in all channels
 proteins <- filter(proteins, !if_all(-UniProt, is.na))
@@ -92,11 +88,7 @@ peptide_metadata <- peptides |>
                 Coverage = Coverage.s.)
 
 # Select quant columns
-peptides <- dplyr::select(peptides, Peptide.label, starts_with(c('X', 'IS'), ignore.case = FALSE))
-
-# Change column names to sample IDs
-ids <- metadata$Sample.ID[match(colnames(peptides)[-1], metadata$MS.ID)]
-colnames(peptides) <- c('Peptide.label', ids)
+peptides <- dplyr::select(peptides, Peptide.label, starts_with(c('S', 'IS'), ignore.case = FALSE))
 
 # Remove peptides with NA in all channels
 peptides <- filter(peptides, !if_all(-Peptide.label, is.na))
@@ -231,12 +223,14 @@ hpa_data <- read_tsv('data/external_data/HPA_v24.tsv', name_repair = 'universal_
 # as a result, proteins will be matched between data sets by UniProt ID primarily
 # and by gene name secondarily
 gene_matches1 <- inner_join(
-  hpa_data, protein_metadata_MS, by = join_by(Gene == Gene.Name)) |> 
+  hpa_data, protein_metadata_MS, by = join_by(Gene == Gene.Name),
+  relationship = 'many-to-many') |> 
   filter(is.na(Uniprot)) |> 
   dplyr::select(UniProt, Uniprot, Gene, Gene.description, Description)
 
 gene_matches2 <- inner_join(
-  hpa_data, protein_metadata, by = join_by(Gene == Assay)) |>
+  hpa_data, protein_metadata, by = join_by(Gene == Assay),
+  relationship = 'many-to-many') |>
   filter(is.na(Uniprot)) |> 
   dplyr::select(UniProt, Uniprot, Gene, Gene.description, Description)
 

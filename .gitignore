@@ -1,6 +1,24 @@
+# R project files
 .Rproj.user
 .Rhistory
 .RData
 .Ruserdata
+
+# macOS files
 .DS_Store
-data/
+
+# Data files
+data/raw_data/*
+data/metadata/*
+data/external_data/*
+data/processed_data/*
+
+# Except files needed for visualization of peptide-level correlations
+!data/processed_data/plasma_data_FASTA3.RDS
+!data/processed_data/peptide_seq_list2.RDS
+
+# Keep the folders themselves
+!data/raw_data/.gitkeep
+!data/metadata/.gitkeep
+!data/external_data/.gitkeep
+!data/processed_data/.gitkeep

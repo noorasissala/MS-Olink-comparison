@@ -133,7 +133,7 @@ peptide_cors <- bind_rows(peptide_cors)
 rownames(peptide_cors) <- peptides_filt2$Peptide.label
 colnames(peptide_cors) <- olink_data_wide$UniProt
 
-write.csv(peptide_cors, file.path(path, 'peptide-olink_cor_matrix.csv'))
+#write.csv(peptide_cors, file.path(path, 'peptide-olink_cor_matrix.csv'))
 
 
 # Number of samples used for calculating correlations
@@ -141,7 +141,7 @@ N_df <- as.data.frame(crossprod(!is.na(t(peptides_filt2[-1])), !is.na(t(olink_da
 rownames(N_df) <- peptides_filt2$Peptide.label
 colnames(N_df) <- olink_data_wide$UniProt
 
-write.csv(N_df, file.path(path, 'peptide-olink_cors_N_matrix.csv'))
+#write.csv(N_df, file.path(path, 'peptide-olink_cors_N_matrix.csv'))
 
 
 ## Correlations in long format
@@ -170,7 +170,7 @@ peptide_cors_long <- peptide_cors %>%
               mutate(UniProt.Olink = str_replace(UniProt.Olink, '\\.', '-')),
             by = join_by(Peptide.label, UniProt.Olink))
 
-write.csv(peptide_cors_long, file.path(path, 'peptide-olink_cors_long.csv'), row.names = FALSE)
+#write.csv(peptide_cors_long, file.path(path, 'peptide-olink_cors_long.csv'), row.names = FALSE)
 
 
 ## Correlations for matching proteins
@@ -216,3 +216,7 @@ nrow(peptide_cors_matches_filt) # 13,856 peptides
 length(unique(unlist(str_split(peptide_cors_matches_filt$UniProt.MS, ';')))) # 847 MS proteins
 length(unique(peptide_cors_matches_filt$Gene.Name.MS)) # 822 genes
 length(unique(peptide_cors_matches_filt$Assay)) # 822 Olink assays/proteins
+
+## Session info
+writeLines(capture.output(sessionInfo()), file.path(path, 'peptide_correlations_session_info.txt'))
+

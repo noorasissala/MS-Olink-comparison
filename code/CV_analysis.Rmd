@@ -222,8 +222,6 @@ ggplot(technical_CVs, aes(x = Technical.CV, fill = Platform, color = Platform)) 
   theme(legend.position = 'inside',
         legend.position.inside = c(0.85, 0.6))
 
-pval
-
 ```
 
 ```{r}
@@ -527,7 +525,7 @@ ggsave(filename = 'technicalCV_vs_missingValues.pdf',
 ```{r}
 
 peptides <- read.delim('data/processed_data/peptide_table_all.txt')
-replicates <- c('LCP27' , 'LCP106' , 'LCP65' , 'LCP76' , 'LCP109' , 'LCP90')
+replicates <- c('S034' , 'S049' , 'S058' , 'S071' , 'S089' , 'S098')
 
 protein_metadata_MS <- protein_metadata |>
   filter(!is.na(Gene.Name))
@@ -593,6 +591,14 @@ ggsave(filename = 'peptide_CV_hist.pdf',
        width = 8.7,
        height = 6,
        units = 'cm')
+
+```
+
+## Session info
+
+```{r}
+
+writeLines(capture.output(sessionInfo()), file.path(path, 'session_info.txt'))
 
 ```
 

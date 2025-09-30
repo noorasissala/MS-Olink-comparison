@@ -75,7 +75,7 @@ n_olink <- length(setdiff(metadata$Sample.ID, metadata_MS$Sample.ID))
 
 n_overlap <- length(intersect(metadata$Sample.ID, metadata_MS$Sample.ID))
 
-pdf(file = paste0(path, '/samples_venn_euler.pdf'),
+pdf(file = paste0(path, '/samples_venn.pdf'),
     width = 4*0.393701, height = 4*0.393701)
   # Plot the venn diagram
   p <- plot(euler(
@@ -91,7 +91,7 @@ pdf(file = paste0(path, '/samples_venn_euler.pdf'),
   p$vp$width <- unit(0.95, "npc")
   p$vp$height <- unit(0.95, "npc")
   
-  p
+  grid::grid.draw(p)
 
 dev.off()
 
@@ -99,14 +99,20 @@ dev.off()
 
 ```
 
+
 ### Age and sex distribution
 
 
 ```{r}
 
-age_distr <- ggplot.density(metadata, Age, fill = '#CFD8F2', color = '#A8BAE6',
-               median_text = FALSE,
-               median_line_params = list(lwd = 0.3)) +
+tryCatch({
+  
+  participant_metadata <- read.delim('data/metadata/participant_metadata.txt')
+  
+  age_distr <- ggplot.density(
+    participant_metadata, Age, fill = '#CFD8F2', color = '#A8BAE6',
+    median_text = FALSE,
+    median_line_params = list(lwd = 0.3)) +
   scale_x_continuous(expand=c(0,0)) +
   scale_y_continuous(expand=expansion(c(0,0.02))) +
   theme(axis.text.y = element_blank(),
@@ -117,46 +123,43 @@ age_distr <- ggplot.density(metadata, Age, fill = '#CFD8F2', color = '#A8BAE6',
         plot.background = element_rect(fill='transparent', color=NA),
         text = element_text(size = 8))
 
-```
+  label_df <- data.frame(Sex = c('Female', 'Male'),
+                         x = c(1, 1),
+                         y = c(0.8, 0.3),
+                         N = as.numeric(table(participant_metadata$Sex))) |> 
+    mutate(label = paste0(Sex, '\n', N))
+  
+  sex_distr <- ggplot(participant_metadata, aes(x = 1, fill = Sex)) +
+    geom_bar(position = 'fill', show.legend = F) +
+    geom_text(data = label_df, aes(label = label, x = x, y = y),
+              size = 8/.pt) +
+    labs(x = 'Sex') +
+    theme_void() +
+    scale_y_continuous(expand=expansion(c(0,0.02))) +
+    theme(axis.title.x = element_text(size = 8)) +
+    scale_fill_manual(values = as.character(TDP_palette[c(14,11)]))
+  
+  
+  p <- age_distr + sex_distr + plot_layout(widths = c(2.5,1)) & 
+    theme(panel.background = element_rect(fill='transparent', color = NA),
+          plot.background = element_rect(fill='transparent', color=NA))
+  
+  
+  ggsave(p,
+         filename = 'cohort_characteristics.png',
+         path = path,
+         width = 4.25,
+         height = 3.25,
+         units = 'cm',
+         bg = 'transparent')
+  
+},
 
-```{r}
+error = function(e) {
+  message('Age and sex not publicly available')
+}
+)
 
-label_df <- data.frame(Sex = c('Female', 'Male'),
-                       x = c(1, 1),
-                       y = c(0.8, 0.3),
-                       N = as.numeric(table(metadata$Sex))) |> 
-  mutate(label = paste0(Sex, '\n', N))
-
-sex_distr <- ggplot(metadata, aes(x = 1, fill = Sex)) +
-  geom_bar(position = 'fill', show.legend = F) +
-  geom_text(data = label_df, aes(label = label, x = x, y = y),
-            size = 8/.pt) +
-  labs(x = 'Sex') +
-  theme_void() +
-  scale_y_continuous(expand=expansion(c(0,0.02))) +
-  theme(axis.title.x = element_text(size = 8)) +
-  scale_fill_manual(values = as.character(TDP_palette[c(14,11)]))
-
-```
-
-
-
-```{r}
-
-age_distr + sex_distr + plot_layout(widths = c(2.5,1)) & 
-  theme(panel.background = element_rect(fill='transparent', color = NA),
-        plot.background = element_rect(fill='transparent', color=NA))
-
-```
-
-```{r}
-
-ggsave(filename = 'cohort_characteristics.png',
-       path = path,
-       width = 4.25,
-       height = 3.25,
-       units = 'cm',
-       bg = 'transparent')
 
 ```
 
@@ -183,7 +186,7 @@ n_olink <- length(setdiff(olink_proteins, ms_proteins))
 
 n_overlap <- length(overlap)
 
-pdf(file = paste0(path, '/venn_MS_Olink_euler.pdf'),
+pdf(file = paste0(path, '/venn_MS_Olink.pdf'),
     width = 5*0.393701, height = 5*0.393701)
   # Plot the venn diagram
   p <- plot(euler(
@@ -199,7 +202,7 @@ pdf(file = paste0(path, '/venn_MS_Olink_euler.pdf'),
   p$vp$width <- unit(0.95, "npc")
   p$vp$height <- unit(0.95, "npc")
   
-  p
+  grid::grid.draw(p)
 
 dev.off()
 
@@ -263,7 +266,7 @@ n_ms_olink <- length(setdiff(overlap, overlap_all))
 n_ms_plasma <- length(setdiff(intersect(ms_proteins, plasma_proteome), overlap_all))
 n_olink_plasma <- length(setdiff(intersect(olink_proteins, plasma_proteome), overlap_all))
 
-pdf(file = paste0(path, '/venn_MS_Olink_plasmaProteome_euler.pdf'),
+pdf(file = paste0(path, '/venn_MS_Olink_plasmaProteome.pdf'),
     width = 4*0.393701, height = 5*0.393701)
 
   p <- plot(euler(
@@ -283,7 +286,7 @@ pdf(file = paste0(path, '/venn_MS_Olink_plasmaProteome_euler.pdf'),
   p$vp$width <- unit(0.95, "npc")
   p$vp$height <- unit(0.95, "npc")
   
-  p
+  grid::grid.draw(p)
 
 dev.off()
 
@@ -902,7 +905,7 @@ n_olink <- length(setdiff(olink_proteins_filtered, ms_proteins_filtered))
 
 n_overlap <- length(overlap_filtered)
 
-pdf(file = paste0(path, '/venn_MS_Olink_euler_max50percNA.pdf'),
+pdf(file = paste0(path, '/venn_MS_Olink_max50percNA.pdf'),
     width = 4*0.393701, height = 4*0.393701)
   p <- plot(euler(
     combinations = c('MS' = n_ms, 
@@ -916,7 +919,7 @@ pdf(file = paste0(path, '/venn_MS_Olink_euler_max50percNA.pdf'),
   p$vp$width <- unit(0.95, "npc")
   p$vp$height <- unit(0.95, "npc")
   
-  p
+  grid::grid.draw(p)
   
 dev.off()
 
@@ -947,7 +950,7 @@ n_ms_olink <- length(setdiff(overlap_filtered, overlap_all))
 n_ms_plasma <- length(setdiff(intersect(ms_proteins_filtered, plasma_proteome), overlap_all))
 n_olink_plasma <- length(setdiff(intersect(olink_proteins_filtered, plasma_proteome), overlap_all))
 
-pdf(file = paste0(path, '/venn_MS_Olink_plasmaProteome_euler_max50percNA.pdf'),
+pdf(file = paste0(path, '/venn_MS_Olink_plasmaProteome_max50percNA.pdf'),
     width = 4*0.393701, height = 5*0.393701)
 
   p <- plot(euler(
@@ -966,7 +969,7 @@ pdf(file = paste0(path, '/venn_MS_Olink_plasmaProteome_euler_max50percNA.pdf'),
   p$vp$width <- unit(0.95, "npc")
   p$vp$height <- unit(0.95, "npc")
   
-  p
+  grid::grid.draw(p)
   
 dev.off()
 
@@ -1273,4 +1276,12 @@ ggsave(filename = 'HPA_bloodConc_plasmaProteomeCoverage_max50NA.pdf',
 
 ```
 
+
+## Session info
+
+```{r}
+
+writeLines(capture.output(sessionInfo()), file.path(path, 'session_info.txt'))
+
+```
 

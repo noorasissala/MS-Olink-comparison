@@ -13,7 +13,7 @@ Comparison with MS-Olink correlations from:
 
 - "Multiplatform Approach for Plasma Proteomics: Complementarity of Olink Proximity Extension Assay Technology to Mass Spectrometry-Based Protein Profiling" (Petrera et al., 2021) (DDA MS, DIA MS, and Olink data)
 - "Multi-platform proteomic analysis of Alzheimer’s disease cerebrospinal fluid and plasma reveals network biomarkers associated with proteostasis and the matrisome" (Dammer et al., 2022) (MS, Olink, and SomaScan data)
-- "The Current Landscape of Plasma Proteomics: Technical Advances, Biological Insights, and Biomarker Discovery" (Kirsher et al., 2025, preprint). (MS, Olink, and SomaScan data)
+- "The Current Landscape of Plasma Proteomics: Technical Advances, Biological Insights, and Biomarker Discovery" (Kirsher et al., 2025). (MS, Olink, and SomaScan data)
 
 
 Comparison with MS-SomaScan correlations from:
@@ -34,6 +34,9 @@ Comparison with Olink-SomaScan correlations from:
 - "Stability and reproducibility of proteomic profiles in epidemiological studies: comparing the Olink and SOMAscan platforms" (Haslam et al., 2022).
 - Kirsher et al. 
 - "Correlations Within and Between Highly Multiplexed Proteomic Assays of Human Plasma" (Rooney et al., 2025)
+- "Comparative studies of 2168 plasma proteins measured by two affinity-based platforms in 4000 Chinese adults" (Wang et al., 2025)
+- "Cross-Ancestry Comparison of Aptamer and Antibody Proteomics Measures" (Nicholas et al., 2025, preprint)
+- "Correlation between Olink and SomaScan proteomics platforms in adults with a Fontan circulation" (Assi et al., 2025)
 
 
 + Analysis of our MS-Olink correlations by confidence tiers from Eldjarn et al., which were based on Olink-SomaScan correlations and the presence of pQTLs.
@@ -311,7 +314,7 @@ rooney2025_cors <- read_xlsx(
   dplyr::rename(UniProt = UniprotID.Soma.11k,
                 Correlation_Previous.study = Soma.vs.Olink.Spearman.s.r,
                 SomaScan.SeqID = SeqID) |> 
-  mutate(N_Pevious.study = 102) # values <LOD were retained, so there were no missing values and N is 102 for all proteins)
+  mutate(N_Previous.study = 102) # values <LOD were retained, so there were no missing values and N is 102 for all proteins)
 
 # Raffield et al.
 raffield_cors <- read_xlsx(
@@ -342,13 +345,40 @@ haslam_cors <- read_xlsx(
 
 # Kirsher et al.
 kirsher_cors <- read_xlsx(
-  'data/external_data/media-1.xlsx',
-  sheet = 'S4 - Interplatform Correlation', 
+  'data/external_data/42004_2025_1665_MOESM4_ESM.xlsx',
+  sheet = 'SD 3- Interplatform Correlation', 
   .name_repair = 'universal_quiet',
   skip = 1) |> 
   mutate(Spearman.Rho = as.numeric(Spearman.Rho),
          N_Previous.study = 78) |> # vaues <LOD were retained, so there are no missing values and N is 78 for all proteins
   dplyr::rename(Correlation_Previous.study = Spearman.Rho)
+
+# Wang et al.
+wang_cors <- read_xlsx(
+  'data/external_data/41467_2025_56935_MOESM4_ESM.xlsx', 
+  sheet = 'Supplementary_Data_1', .name_repair = 'universal_quiet') |> 
+  dplyr::rename(UniProt = uniprot_id,
+                Correlation_Previous.study = rho_olink_soma_ANML,
+                SomaScan.SeqID = somascan_id,
+                OlinkID = olink_id) |> 
+  mutate(N_Previous.study = 3976)  # assuming that values <LOD were retained, there were no missing values, so N is 3976 for all proteins
+
+# Nicholas et al.
+nicholas_cors <- read_xlsx(
+  'data/external_data/9aa3a2cf7b7a21eb1aa9c0bc.xlsx', 
+  sheet = 'ST2.Correlation_Per_Probe', skip = 2, .name_repair = 'universal_quiet') |> 
+  dplyr::rename(Correlation_Previous.study = rho_all_SMP_normalized,
+                SomaScan.SeqID = SeqId) |> 
+  mutate(N_Previous.study = 1930)  # assuming that values <LOD were retained, there were no missing values, so N is 1930 for all proteins
+
+# Assi et al.
+assi_cors <- read_xlsx(
+  'data/external_data/1-s2.0-S2666668525000205-mmc2.xlsx', 
+  sheet = 'Supplemental Data 1', skip = 4, .name_repair = 'universal_quiet') |> 
+  dplyr::rename(Correlation_Previous.study = Rho,
+                P.value_Previous.study = p,
+                SomaScan.SeqID = AptName) |> 
+  mutate(N_Previous.study = 71)  # assuming that values <LOD were retained, there were no missing values, so N is 130 for all proteins
 
 ```
 
@@ -383,7 +413,10 @@ cor_tables <- list(
   'Kirsher et al. (Olink 5K - SomaScan 7K)' = kirsher_cors |>
     filter(Platform_1 == 'Olink 5K', Platform_2 == 'SomaScan 7K'),
   'Kirsher et al. (Olink 5K - SomaScan 11K)' = kirsher_cors |>
-    filter(Platform_1 == 'Olink 5K', Platform_2 == 'SomaScan 11K')) |> 
+    filter(Platform_1 == 'Olink 5K', Platform_2 == 'SomaScan 11K'),
+  'Wang et al.' = wang_cors,
+  'Nicholas et al.' = nicholas_cors,
+  'Assi et al.' = assi_cors) |> 
   map(\(x) dplyr::select(
     x, any_of(c('UniProt', 'Gene.Name', 'Correlation_Previous.study', 'N_Previous.study',
                 'P.value_Previous.study', 'Adj.p.value_Previous.study', 'SomaID', 
@@ -405,7 +438,8 @@ comparisons <- tibble(
                  'Kirsher et al. (Olink 3K - SomaScan 7K)', 
                  'Kirsher et al. (Olink 3K - SomaScan 11K)',
                  'Kirsher et al. (Olink 5K - SomaScan 7K)',
-                 'Kirsher et al. (Olink 5K - SomaScan 11K)') ~ 'Olink-SomaScan'
+                 'Kirsher et al. (Olink 5K - SomaScan 11K)', 
+                 'Wang et al.', 'Nicholas et al.', 'Assi et al.') ~ 'Olink-SomaScan'
   )
 )
 
@@ -428,7 +462,7 @@ cor_table <- cor_tables |>
   left_join(comparisons, by = 'Study') |>
   mutate(Cor.interval_Previous.study = cor_intervals(Correlation_Previous.study),
          Cor.method_Previous.study = ifelse(
-           str_detect(Study, 'Dammer'), 'Pearson', 'Spearman')) |>
+           str_detect(Study, 'Dammer|Nicholas'), 'Pearson', 'Spearman')) |>
   filter(!is.na(Correlation_Previous.study)) |> 
   left_join(my_cors, by = 'UniProt', suffix = c('_Previous.study', '_Sissala')) |> 
   left_join(my_cors, by = join_by(Gene.Name_Previous.study == Gene.Name), suffix = c('', '_x')) |> 
@@ -480,7 +514,9 @@ cor_table_summarized <- cor_table |>
   group_by(Study, Comparison, UniProt) |> 
   summarize(Correlation_Previous.study = median(Correlation_Previous.study, na.rm = TRUE),
             Correlation_Sissala = unique(Correlation_Sissala)) |> 
-  bind_rows(filter(cor_table, Study == 'Finkernagel et al.')) # put back Finkernagel et al. correlations
+  bind_rows(filter(
+    cor_table[c('Study', 'Comparison', 'UniProt', 'Gene.Name', 'Correlation_Previous.study', 'Correlation_Sissala')], 
+    Study == 'Finkernagel et al.')) # put back Finkernagel et al. correlations
 
 ```
 
@@ -505,13 +541,13 @@ overlap_medians <- cor_table_summarized |>
 
 study_summary <- study_summary |> 
   left_join(study_medians, by = c('Study', 'Comparison', 'Unique.proteins')) |> 
-  left_join(overlap_medians, by = c('Study', 'Comparison', 'Overlap.with.present.study'))
+  left_join(overlap_medians, by = c('Study', 'Comparison', 'Overlap.with.present.study')) |> 
+  dplyr::relocate(Overlap.with.present.study, .before = Median.correlation_Overlap)
 
 study_summary
 
 write.csv(study_summary, file.path(path, 'study_summary.csv'),
           row.names = FALSE)
-  
 
 ```
 
@@ -552,7 +588,7 @@ Function for plotting histograms of correlations between overlapping proteins in
 ```{r}
 
 comparison_histogram <- function(cor_table, comparison, ncol = 2, nrow = NULL,
-                                   facet_labels = NULL) {
+                                   facet_labels = NULL, pval_table = NULL) {
   
   # Prepare data
   cor_table <- cor_table %>%
@@ -597,21 +633,34 @@ comparison_histogram <- function(cor_table, comparison, ncol = 2, nrow = NULL,
     )
   
   # Wilcoxon p-values
-  pval_df <- facet_data %>%
-    group_by(Study) %>%
-    summarise(
-      p.value = wilcox.test(Correlation ~ Study.group, data = facet_data[cur_group_rows(), ])$p.value,
-      npcx = "left",
-      npcy = 0.8) |> 
-    ungroup() |> 
-    # adjust p-values with FDR method
-    mutate(
-      p.adj = p.adjust(p.value, method = "fdr"),
-      pval_label = format_pval_label(p.adj))
+  if (is.null(pval_table)) {
       
+    pval_df <- facet_data %>%
+      group_by(Study) %>%
+      summarise(
+        p.value = wilcox.test(Correlation ~ Study.group, data = facet_data[cur_group_rows(), ])$p.value,
+        npcx = "left",
+        npcy = 0.8, 
+        groups = '.drop') |> 
+      # adjust p-values with FDR method
+      mutate(p.adj = p.adjust(p.value, method = "fdr")) |> 
+      rowwise() |>
+      mutate(pval_label = format_pval_label(p.adj)) |> 
+      ungroup()
     
+  } else {
+    pval_df <- pval_table %>%
+      dplyr::select(Study, p.adj) %>%
+      mutate(
+        npcx = "left",
+        npcy = 0.8) |> 
+      rowwise() |>
+      mutate(pval_label = format_pval_label(p.adj)) |> 
+      ungroup() |> 
+      filter(Study %in% unique(facet_data$Study))
+  }
   
-  # Default empty named vector if NULL
+  # Default empty named vector if facet_labels is NULL
   if (is.null(facet_labels)) {
     facet_labels <- setNames(character(0), character(0))
   }
@@ -736,7 +785,8 @@ ms_soma_cors <- cor_table |>
   select(Study, UniProt, Gene.Name, Description, SomaID, SomaScan.SeqID,
          contains('Previous.study'), contains('Sissala')) |> 
   mutate(Study = ifelse(str_detect(Study, 'Dammer'),
-                       'Dammer et al.', Study))
+                       'Dammer et al.', Study)) |> 
+  dplyr::select(-OlinkID_Previous.study)
 
 write.csv(ms_soma_cors, file.path(path, 'MS-SomaScan_cor_comparisons.csv'),
           row.names = FALSE)
@@ -781,12 +831,23 @@ facet_labels <- c('Dammer et al. (Olink-SomaScan)' = 'Dammer et al.')
 olink_soma_studies <- cor_table_summarized |> 
   filter(Comparison == 'Olink-SomaScan') |> 
   pull(Study) |> 
-  unique()
+  unique() |> 
+  sort()
 
+# Calculate and adjust p-values for Wilcoxon tests comparing correlations in the present study and previous studies
+olink_soma_pvals <- cor_table_summarized |> 
+  filter(Comparison == 'Olink-SomaScan', !is.na(Correlation_Previous.study),
+         !is.na(Correlation_Sissala)) |> 
+  group_by(Study) |> 
+  summarise(p.value = wilcox.test(Correlation_Previous.study, Correlation_Sissala)$p.value,
+            .groups = 'drop') |> 
+  mutate(p.adj = p.adjust(p.value, method = 'fdr'))
+
+# Plot histograms in two pages
 cor_table_summarized |> 
   filter(Study %in% olink_soma_studies[1:8]) |> 
   comparison_histogram(comparison = 'Olink-SomaScan', nrow = 4, ncol = 2,
-                       facet_labels = facet_labels) +
+                       facet_labels = facet_labels, pval_table = olink_soma_pvals) +
   labs(caption = 'Continued on the next page') +
   theme(plot.caption = element_text(hjust = 0.5, size = 8, face = 'bold',
                                     margin = margin(t = 10, b = 10)))
@@ -804,13 +865,16 @@ ggsave(filename = 'Olink-SomaScan_cors_overlappingProteins_page1.pdf',
 
 cor_table_summarized |> 
   filter(Study %in% olink_soma_studies[9:length(olink_soma_studies)]) |>
-  comparison_histogram(comparison = 'Olink-SomaScan', nrow = 3, ncol = 2,
-                       facet_labels = facet_labels)
+  comparison_histogram(comparison = 'Olink-SomaScan', nrow = 4, ncol = 2,
+                       facet_labels = facet_labels, pval_table = olink_soma_pvals) +
+  labs(caption = 'Figure legend on the next page') +
+  theme(plot.caption = element_text(hjust = 0.5, size = 8, face = 'bold',
+                                    margin = margin(t = 10, b = 10)))
 
 ggsave(filename = 'Olink-SomaScan_cors_overlappingProteins_page2.pdf',
        path = path,
        width = 18,
-       height = 18,
+       height = 25,
        units = 'cm')
 
 
@@ -1023,4 +1087,11 @@ ggsave(filename = 'cor_by_tier_Sissala_vs_Eldjarn.pdf',
 
 ```
 
+## Session info
+
+```{r}
+
+writeLines(capture.output(sessionInfo()), file.path(path, 'session_info.txt'))
+
+```
 

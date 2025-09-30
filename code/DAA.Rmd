@@ -87,7 +87,8 @@ overlap_no_NA <- intersect(olink_data_wide$UniProt, ms_noNA$UniProt)
 length(overlap_no_NA)
 
 # Metadata
-metadata <- read_metadata(withReplicates = FALSE, samples = 'overlapping')
+metadata <- read.delim('data/metadata/participant_metadata.txt') |> 
+  filter(Sample.ID %in% unique(olink_data$Sample.ID))
 
 # Protein annotations
 protein_metadata <- read.csv('data/metadata/protein_metadata.csv') %>% 
@@ -764,17 +765,6 @@ p1
 
 ```
 
-```{r}
-
-ggsave(filename = 'replication_of_DAPs_all_overlappingProteins.pdf',
-       path = path,
-       width = 12,
-       height = 6.5,
-       units = 'cm')
-
-```
-
-
 ### Overlapping proteins - no missing values
 
 ```{r}
@@ -802,18 +792,6 @@ p2
 
 ```
 
-
-```{r}
-
-ggsave(filename = 'replication_of_DAPs_noMissing_overlappingProteins.pdf',
-       path = path,
-       width = 12,
-       height = 6.5,
-       units = 'cm')
-
-```
-
-
 ```{r}
 
 (p1 + theme(plot.margin = margin(l = 10, r = 5.5, b = 5.5, t = 5.5))) + 
@@ -831,6 +809,14 @@ ggsave(filename = 'replication_of_DAPs.pdf',
        width = 12,
        height = 7,
        units = 'cm')
+
+```
+
+## Session info
+
+```{r}
+
+writeLines(capture.output(sessionInfo()), file.path(path, 'session_info.txt'))
 
 ```
 

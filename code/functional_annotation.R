@@ -42,9 +42,6 @@ olink_data <- read_OlinkExplore_data(
 # Olink Explore data in wide format
 olink_data_wide <- olink_long_to_wide(olink_data, id_cols = 'UniProt')
 
-# Metadata
-metadata <- read_metadata()
-
 # Protein annotations
 protein_metadata <- read.csv('data/metadata/protein_metadata.csv') |> 
   filter(UniProt %in% ms_data$UniProt | OlinkID %in% olink_data$OlinkID)
@@ -459,135 +456,142 @@ ggsave(GO_BP_dotplot,
 ##### Coverage of clinically used biomarkers #####
 
 # Load FDA biomarker data from Anderson (Clinical Chemistry, 2010)
-biomarkers <- readxl::read_excel('data/external_data/126706_supplemental_table_1.xls',
-                                 range = 'B1:R110', .name_repair = 'universal_quiet') |> 
-  dplyr::rename(Protein.Name = Protein.name.from.FDA,
-                UniProt = SwissProt.Accession.s.,
-                Blood.conc.ugmL = Normal.value..Hortin..ug.ml.) |> 
-  mutate(UniProt = ifelse(UniProt %in% c('?', '~'), NA, UniProt),
-         UniProt = str_replace_all(UniProt, ' \\+ ', ','),
-         UniProt = str_replace_all(UniProt, ' or ', ','))
 
-# All FDA biomarkers with a UniProt ID
-fda_biomarkers <- biomarkers |> 
-  filter(!is.na(UniProt)) |> 
-  pull(Protein.Name)
+tryCatch( {
+  
+  biomarkers <- readxl::read_excel('data/external_data/126706_supplemental_table_1.xls',
+                                   range = 'B1:R110', .name_repair = 'universal_quiet') |> 
+    dplyr::rename(Protein.Name = Protein.name.from.FDA,
+                  UniProt = SwissProt.Accession.s.,
+                  Blood.conc.ugmL = Normal.value..Hortin..ug.ml.) |> 
+    mutate(UniProt = ifelse(UniProt %in% c('?', '~'), NA, UniProt),
+           UniProt = str_replace_all(UniProt, ' \\+ ', ','),
+           UniProt = str_replace_all(UniProt, ' or ', ','))
+  
+  # All FDA biomarkers with a UniProt ID
+  fda_biomarkers <- biomarkers |> 
+    filter(!is.na(UniProt)) |> 
+    pull(Protein.Name)
+  
+  # FDA biomarkers found with MS
+  ms_biomarkers_uniprot <- biomarkers |> 
+    filter(!is.na(UniProt)) |> 
+    separate_longer_delim(UniProt, ',') |> 
+    inner_join(filter(protein_metadata, UniProt %in% ms_proteins), by = 'UniProt') |> 
+    group_by(Protein.Name) |>
+    summarize(UniProt_MS = paste(UniProt, collapse = ';'),
+              Gene.Name_MS = paste(Gene.Name, collapse = ';'))
+  
+  ms_biomarkers <- ms_biomarkers_uniprot |>
+    distinct(Protein.Name) |> 
+    pull(Protein.Name)
+  
+  # FDA biomarkers found with Olink
+  olink_biomarkers_uniprot <- biomarkers |>
+    filter(!is.na(UniProt)) |>
+    separate_longer_delim(UniProt, ',') |>
+    inner_join(filter(protein_metadata, UniProt %in% olink_proteins), by = 'UniProt') |> 
+    group_by(Protein.Name) |>
+    summarize(UniProt_Olink = paste(UniProt, collapse = ';'),
+              Assay_Olink = paste(Assay, collapse = ';'),
+              OlinkID = paste(OlinkID, collapse = ';'))
+  
+  olink_biomarkers <- olink_biomarkers_uniprot |>
+    distinct(Protein.Name) |> 
+    pull(Protein.Name)
+  
+  # All biomarkers detected with MS or Olink
+  all_detected_biomarkers <- union(ms_biomarkers, olink_biomarkers)
+  
+  # Calculate proportions
+  ms_prop <- length(intersect(ms_biomarkers, fda_biomarkers)) / length(fda_biomarkers)*100
+  olink_prop <- length(intersect(olink_biomarkers, fda_biomarkers)) / length(fda_biomarkers)*100
+  ms_olink_prop <- length(intersect(all_detected_biomarkers, fda_biomarkers)) / length(fda_biomarkers)*100
+  
+  # Data for bar plot
+  plot_data <- data.frame(
+    Protein_Set = factor(c(rep("MS", 2), rep("Olink", 2), rep("MS + Olink", 2)),
+                         levels = c('MS', 'Olink', 'MS + Olink')),
+    Source = factor(c('MS', 'FDA', 'Olink', 'FDA', 'MS + Olink', 'FDA'),
+                    levels = c('MS', 'Olink', 'MS + Olink', 'FDA')),
+    N = c(length(ms_biomarkers), length(fda_biomarkers) - length(ms_biomarkers),
+          length(olink_biomarkers), length(fda_biomarkers) - length(olink_biomarkers),
+          length(all_detected_biomarkers), length(fda_biomarkers) - length(all_detected_biomarkers)),
+    Proportion = c(ms_prop, 100 - ms_prop, 
+                   olink_prop, 100 - olink_prop, 
+                   ms_olink_prop, 100 - ms_olink_prop)) |> 
+    mutate(Label = paste0(round(Proportion), '%'),
+           Label = ifelse(Source == 'FDA', NA, Label))
+  
+  # Bar plot
+  p <- plot_data |> 
+    ggplot(aes(fill = Source, alpha = Source, y = N, x = Protein_Set)) +
+    geom_col(position = position_stack(reverse = T)) +
+    geom_text(aes(label = Label),
+              position = position_stack(vjust = 0.5, reverse = T), size = 5/.pt,
+              show.legend = F) +
+    scale_y_continuous(expand = expansion(mult = c(0,0.05))) +
+    theme_publ() +
+    labs(x = 'Platform', y = 'Number of proteins',
+         title = 'Coverage of FDA-approved plasma protein biomarkers') +
+    theme(text = element_text(size = 5)) +
+    scale_fill_manual(values = as.character(c(TDP_palette[c(1,4,13)], 'grey80'))) +
+    scale_alpha_manual(values = c(0.8,1,1,1))
+  
+  ggsave(p,
+         filename = 'FDA_biomarker_coverage.pdf',
+         path = path,
+         width = 6,
+         height = 6.5,
+         units = 'cm')
+  
+  
+  # Proportional venn
+  n_ms <- length(setdiff(ms_biomarkers, olink_biomarkers))
+  n_olink <- length(setdiff(olink_biomarkers, ms_biomarkers))
+  n_ms_olink <- length(intersect(ms_biomarkers, olink_biomarkers))
+  
+  pdf(file = file.path(path, 'FDA_biomarker_venn.pdf'),
+      width = 4*0.393701, height = 5*0.393701)
+  
+  p <- plot(euler(
+    combinations = c('MS' = n_ms,
+                     'Olink' = n_olink,
+                     'MS&Olink' = n_ms_olink)),
+    fills = list(fill = TDP_palette[c(1,4)], alpha = 0.5), 
+    edges = list(lwd = 2.5, col = TDP_palette[c(1,4)]),
+    quantities = list(fontsize = 7, font = 'regular', fontfamily = 'Helvetica'), 
+    labels = list(fontsize = 8, font = 'regular', fontfamily = 'Helvetica'))
+  
+  # Adjust plot to smaller size
+  p$vp$width <- unit(0.95, "npc")
+  p$vp$height <- unit(0.95, "npc")
+  
+  p
+  
+  dev.off()
+  
+  # Result table
+  biomarkers_table <- biomarkers |> 
+    dplyr::select(Protein.Name, UniProt) |>
+    dplyr::rename(UniProt_FDA = UniProt) |>
+    mutate(Detected_MS = Protein.Name %in% ms_biomarkers) |>
+    left_join(ms_biomarkers_uniprot, by = 'Protein.Name') |>
+    mutate(Detected_Olink = Protein.Name %in% olink_biomarkers) |>
+    left_join(olink_biomarkers_uniprot, by = 'Protein.Name') |>
+    mutate(Detected.Platform = case_when(
+      Detected_MS & Detected_Olink ~ 'Both',
+      Detected_MS & !Detected_Olink ~ 'MS',
+      Detected_Olink & !Detected_MS ~ 'Olink',
+      !Detected_Olink & !Detected_MS ~ 'None'),
+      Detected.Platform = ifelse(
+        is.na(UniProt_FDA), NA_character_, Detected.Platform))
+  
+  write.csv(biomarkers_table, file.path(path, 'FDA_biomarkers_table.csv'))
 
-# FDA biomarkers found with MS
-ms_biomarkers_uniprot <- biomarkers |> 
-  filter(!is.na(UniProt)) |> 
-  separate_longer_delim(UniProt, ',') |> 
-  inner_join(filter(protein_metadata, UniProt %in% ms_proteins), by = 'UniProt') |> 
-  group_by(Protein.Name) |>
-  summarize(UniProt_MS = paste(UniProt, collapse = ';'),
-            Gene.Name_MS = paste(Gene.Name, collapse = ';'))
-
-ms_biomarkers <- ms_biomarkers_uniprot |>
-  distinct(Protein.Name) |> 
-  pull(Protein.Name)
-
-# FDA biomarkers found with Olink
-olink_biomarkers_uniprot <- biomarkers |>
-  filter(!is.na(UniProt)) |>
-  separate_longer_delim(UniProt, ',') |>
-  inner_join(filter(protein_metadata, UniProt %in% olink_proteins), by = 'UniProt') |> 
-  group_by(Protein.Name) |>
-  summarize(UniProt_Olink = paste(UniProt, collapse = ';'),
-            Assay_Olink = paste(Assay, collapse = ';'),
-            OlinkID = paste(OlinkID, collapse = ';'))
-
-olink_biomarkers <- olink_biomarkers_uniprot |>
-  distinct(Protein.Name) |> 
-  pull(Protein.Name)
-
-# All biomarkers detected with MS or Olink
-all_detected_biomarkers <- union(ms_biomarkers, olink_biomarkers)
-
-# Calculate proportions
-ms_prop <- length(intersect(ms_biomarkers, fda_biomarkers)) / length(fda_biomarkers)*100
-olink_prop <- length(intersect(olink_biomarkers, fda_biomarkers)) / length(fda_biomarkers)*100
-ms_olink_prop <- length(intersect(all_detected_biomarkers, fda_biomarkers)) / length(fda_biomarkers)*100
-
-# Data for bar plot
-plot_data <- data.frame(
-  Protein_Set = factor(c(rep("MS", 2), rep("Olink", 2), rep("MS + Olink", 2)),
-                       levels = c('MS', 'Olink', 'MS + Olink')),
-  Source = factor(c('MS', 'FDA', 'Olink', 'FDA', 'MS + Olink', 'FDA'),
-                  levels = c('MS', 'Olink', 'MS + Olink', 'FDA')),
-  N = c(length(ms_biomarkers), length(fda_biomarkers) - length(ms_biomarkers),
-        length(olink_biomarkers), length(fda_biomarkers) - length(olink_biomarkers),
-        length(all_detected_biomarkers), length(fda_biomarkers) - length(all_detected_biomarkers)),
-  Proportion = c(ms_prop, 100 - ms_prop, 
-                 olink_prop, 100 - olink_prop, 
-                 ms_olink_prop, 100 - ms_olink_prop)) |> 
-  mutate(Label = paste0(round(Proportion), '%'),
-         Label = ifelse(Source == 'FDA', NA, Label))
-
-# Bar plot
-plot_data |> 
-  ggplot(aes(fill = Source, alpha = Source, y = N, x = Protein_Set)) +
-  geom_col(position = position_stack(reverse = T)) +
-  geom_text(aes(label = Label),
-            position = position_stack(vjust = 0.5, reverse = T), size = 5/.pt,
-            show.legend = F) +
-  scale_y_continuous(expand = expansion(mult = c(0,0.05))) +
-  theme_publ() +
-  labs(x = 'Platform', y = 'Number of proteins',
-       title = 'Coverage of FDA-approved plasma protein biomarkers') +
-  theme(text = element_text(size = 5)) +
-  scale_fill_manual(values = as.character(c(TDP_palette[c(1,4,13)], 'grey80'))) +
-  scale_alpha_manual(values = c(0.8,1,1,1))
-
-ggsave(filename = 'FDA_biomarker_coverage.pdf',
-       path = path,
-       width = 6,
-       height = 6.5,
-       units = 'cm')
-
-
-# Proportional venn
-n_ms <- length(setdiff(ms_biomarkers, olink_biomarkers))
-n_olink <- length(setdiff(olink_biomarkers, ms_biomarkers))
-n_ms_olink <- length(intersect(ms_biomarkers, olink_biomarkers))
-
-pdf(file = file.path(path, 'FDA_biomarker_venn.pdf'),
-    width = 4*0.393701, height = 5*0.393701)
-
-p <- plot(euler(
-  combinations = c('MS' = n_ms,
-                   'Olink' = n_olink,
-                   'MS&Olink' = n_ms_olink)),
-  fills = list(fill = TDP_palette[c(1,4)], alpha = 0.5), 
-  edges = list(lwd = 2.5, col = TDP_palette[c(1,4)]),
-  quantities = list(fontsize = 7, font = 'regular', fontfamily = 'Helvetica'), 
-  labels = list(fontsize = 8, font = 'regular', fontfamily = 'Helvetica'))
-
-# Adjust plot to smaller size
-p$vp$width <- unit(0.95, "npc")
-p$vp$height <- unit(0.95, "npc")
-
-p
-
-dev.off()
-
-# Result table
-biomarkers_table <- biomarkers |> 
-  dplyr::select(Protein.Name, UniProt) |>
-  dplyr::rename(UniProt_FDA = UniProt) |>
-  mutate(Detected_MS = Protein.Name %in% ms_biomarkers) |>
-  left_join(ms_biomarkers_uniprot, by = 'Protein.Name') |>
-  mutate(Detected_Olink = Protein.Name %in% olink_biomarkers) |>
-  left_join(olink_biomarkers_uniprot, by = 'Protein.Name') |>
-  mutate(Detected.Platform = case_when(
-           Detected_MS & Detected_Olink ~ 'Both',
-           Detected_MS & !Detected_Olink ~ 'MS',
-           Detected_Olink & !Detected_MS ~ 'Olink',
-           !Detected_Olink & !Detected_MS ~ 'None'),
-         Detected.Platform = ifelse(
-           is.na(UniProt_FDA), NA_character_, Detected.Platform))
-
-write.csv(biomarkers_table, file.path(path, 'FDA_biomarkers_table.csv'))
-
+}, error = function(e) {
+  message('Data from Anderson, Clinical Chemistry (2010) not found, skipping FDA biomarker analysis.')
+})
 
 ##### Analysis on proteins with max 50% missing values #####
 
@@ -729,69 +733,78 @@ ggsave(GO_BP_dotplot_max50NA,
 
 ###### Coverage of clinically used biomarkers ######
 
-ms_biomarkers_uniprot_max50NA <- biomarkers |> 
-  filter(!is.na(UniProt)) |> 
-  separate_longer_delim(UniProt, ',') |> 
-  inner_join(filter(protein_metadata, UniProt %in% ms_proteins_max50NA), by = 'UniProt') |> 
-  group_by(Protein.Name) |>
-  summarize(UniProt_MS = paste(UniProt, collapse = ','),
-            Gene.Name_MS = paste(Gene.Name, collapse = ','))
+tryCatch( {
+  
+  ms_biomarkers_uniprot_max50NA <- biomarkers |> 
+    filter(!is.na(UniProt)) |> 
+    separate_longer_delim(UniProt, ',') |> 
+    inner_join(filter(protein_metadata, UniProt %in% ms_proteins_max50NA), by = 'UniProt') |> 
+    group_by(Protein.Name) |>
+    summarize(UniProt_MS = paste(UniProt, collapse = ','),
+              Gene.Name_MS = paste(Gene.Name, collapse = ','))
+  
+  ms_biomarkers_max50NA <- ms_biomarkers_uniprot_max50NA |>
+    distinct(Protein.Name) |> 
+    pull(Protein.Name)
+  
+  olink_biomarkers_uniprot_max50NA <- biomarkers |>
+    filter(!is.na(UniProt)) |>
+    separate_longer_delim(UniProt, ',') |>
+    inner_join(filter(protein_metadata, UniProt %in% olink_proteins_max50NA), by = 'UniProt') |> 
+    group_by(Protein.Name) |>
+    summarize(UniProt_Olink = paste(UniProt, collapse = ';'),
+              Assay_Olink = paste(Assay, collapse = ';'),
+              OlinkID = paste(OlinkID, collapse = ';'))
+  
+  olink_biomarkers_max50NA <- olink_biomarkers_uniprot_max50NA |>
+    distinct(Protein.Name) |> 
+    pull(Protein.Name)
+  
+  all_detected_biomarkers_max50NA <- union(ms_biomarkers_max50NA, olink_biomarkers_max50NA)
+  
+  # Calculate proportions
+  ms_prop_max50NA <- length(intersect(ms_biomarkers_max50NA, fda_biomarkers)) / length(fda_biomarkers)*100
+  olink_prop_max50NA <- length(intersect(olink_biomarkers_max50NA, fda_biomarkers)) / length(fda_biomarkers)*100
+  ms_olink_prop_max50NA <- length(intersect(all_detected_biomarkers_max50NA, fda_biomarkers)) / length(fda_biomarkers)*100
+  
+  plot_data <- data.frame(
+    Protein_Set = factor(c(rep("MS", 2), rep("Olink", 2), rep("MS + Olink", 2)),
+                         levels = c('MS', 'Olink', 'MS + Olink')),
+    Source = factor(c('MS', 'FDA', 'Olink', 'FDA', 'MS + Olink', 'FDA'),
+                    levels = c('MS', 'Olink', 'MS + Olink', 'FDA')),
+    N = c(length(ms_biomarkers_max50NA), length(fda_biomarkers) - length(ms_biomarkers_max50NA),
+          length(olink_biomarkers_max50NA), length(fda_biomarkers) - length(olink_biomarkers_max50NA),
+          length(all_detected_biomarkers_max50NA), length(fda_biomarkers) - length(all_detected_biomarkers_max50NA)),
+    Proportion = c(ms_prop_max50NA, 100 - ms_prop_max50NA, 
+                   olink_prop_max50NA, 100 - olink_prop_max50NA, 
+                   ms_olink_prop_max50NA, 100 - ms_olink_prop_max50NA)) |> 
+    mutate(Label = paste0(round(Proportion), '%'),
+           Label = ifelse(Source == 'FDA', NA, Label))
+  
+  p <- plot_data |> 
+    ggplot(aes(fill = Source, alpha = Source, y = N, x = Protein_Set)) +
+    geom_col(position = position_stack(reverse = T)) +
+    geom_text(aes(label = Label),
+              position = position_stack(vjust = 0.5, reverse = T), size = 5/.pt,
+              show.legend = F) +
+    scale_y_continuous(expand = expansion(mult = c(0,0.05))) +
+    theme_publ() +
+    labs(x = 'Platform', y = 'Number of proteins',
+         title = 'Coverage of FDA-approved plasma protein biomarkers') +
+    theme(text = element_text(size = 5)) +
+    scale_fill_manual(values = as.character(c(TDP_palette[c(1,4,13)], 'grey80'))) +
+    scale_alpha_manual(values = c(0.8,1,1,1))
+  
+  ggsave(p,
+         filename = 'FDA_biomarker_coverage_max50NA.pdf',
+         path = path,
+         width = 6,
+         height = 6.5,
+         units = 'cm')
+  
+}, error = function(e) {
+  message('Data from Anderson, Clinical Chemistry (2010) not found, skipping FDA biomarker analysis.')
+})
 
-ms_biomarkers_max50NA <- ms_biomarkers_uniprot_max50NA |>
-  distinct(Protein.Name) |> 
-  pull(Protein.Name)
-
-olink_biomarkers_uniprot_max50NA <- biomarkers |>
-  filter(!is.na(UniProt)) |>
-  separate_longer_delim(UniProt, ',') |>
-  inner_join(filter(protein_metadata, UniProt %in% olink_proteins_max50NA), by = 'UniProt') |> 
-  group_by(Protein.Name) |>
-  summarize(UniProt_Olink = paste(UniProt, collapse = ';'),
-            Assay_Olink = paste(Assay, collapse = ';'),
-            OlinkID = paste(OlinkID, collapse = ';'))
-
-olink_biomarkers_max50NA <- olink_biomarkers_uniprot_max50NA |>
-  distinct(Protein.Name) |> 
-  pull(Protein.Name)
-
-all_detected_biomarkers_max50NA <- union(ms_biomarkers_max50NA, olink_biomarkers_max50NA)
-
-# Calculate proportions
-ms_prop_max50NA <- length(intersect(ms_biomarkers_max50NA, fda_biomarkers)) / length(fda_biomarkers)*100
-olink_prop_max50NA <- length(intersect(olink_biomarkers_max50NA, fda_biomarkers)) / length(fda_biomarkers)*100
-ms_olink_prop_max50NA <- length(intersect(all_detected_biomarkers_max50NA, fda_biomarkers)) / length(fda_biomarkers)*100
-
-plot_data <- data.frame(
-  Protein_Set = factor(c(rep("MS", 2), rep("Olink", 2), rep("MS + Olink", 2)),
-                       levels = c('MS', 'Olink', 'MS + Olink')),
-  Source = factor(c('MS', 'FDA', 'Olink', 'FDA', 'MS + Olink', 'FDA'),
-                  levels = c('MS', 'Olink', 'MS + Olink', 'FDA')),
-  N = c(length(ms_biomarkers_max50NA), length(fda_biomarkers) - length(ms_biomarkers_max50NA),
-        length(olink_biomarkers_max50NA), length(fda_biomarkers) - length(olink_biomarkers_max50NA),
-        length(all_detected_biomarkers_max50NA), length(fda_biomarkers) - length(all_detected_biomarkers_max50NA)),
-  Proportion = c(ms_prop_max50NA, 100 - ms_prop_max50NA, 
-                 olink_prop_max50NA, 100 - olink_prop_max50NA, 
-                 ms_olink_prop_max50NA, 100 - ms_olink_prop_max50NA)) |> 
-  mutate(Label = paste0(round(Proportion), '%'),
-         Label = ifelse(Source == 'FDA', NA, Label))
-
-plot_data |> 
-  ggplot(aes(fill = Source, alpha = Source, y = N, x = Protein_Set)) +
-  geom_col(position = position_stack(reverse = T)) +
-  geom_text(aes(label = Label),
-            position = position_stack(vjust = 0.5, reverse = T), size = 5/.pt,
-            show.legend = F) +
-  scale_y_continuous(expand = expansion(mult = c(0,0.05))) +
-  theme_publ() +
-  labs(x = 'Platform', y = 'Number of proteins',
-       title = 'Coverage of FDA-approved plasma protein biomarkers') +
-  theme(text = element_text(size = 5)) +
-  scale_fill_manual(values = as.character(c(TDP_palette[c(1,4,13)], 'grey80'))) +
-  scale_alpha_manual(values = c(0.8,1,1,1))
-
-ggsave(filename = 'FDA_biomarker_coverage_max50NA.pdf',
-       path = path,
-       width = 6,
-       height = 6.5,
-       units = 'cm')
-
+## Session info
+writeLines(capture.output(sessionInfo()), file.path(path, 'session_info.txt'))

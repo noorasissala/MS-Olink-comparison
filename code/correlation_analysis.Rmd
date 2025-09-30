@@ -99,10 +99,6 @@ olink_data_clean_wide <- olink_long_to_wide(
 # Reorder columns so they match between data frames
 olink_data_clean_wide <- olink_data_clean_wide[c('UniProt', 'OlinkID', colnames(ms_data)[-1])]
 
-# Load metadata
-metadata_all <- read_metadata(withReplicates = TRUE, samples = 'MS')
-metadata <- read_metadata(withReplicates = FALSE, samples = 'overlapping')
-
 # Data for overlapping proteins
 overlap_data <- ms_data %>%
   pivot_longer(cols = -UniProt,
@@ -114,7 +110,6 @@ overlap_data <- ms_data %>%
          NPX.clean = ifelse(
            Below.LOD | QC_Warning == 'WARN' |  # QC warnings and <LOD removed
              Assay_Warning == 'WARN', NA, NPX)) %>%
-  full_join(metadata, by = 'Sample.ID') %>%
   left_join(protein_metadata, 
             by = join_by(UniProt, Panel, OlinkID, Assay)) %>%
   dplyr::select(Sample.ID, UniProt, Gene.Name, Description, Assay, OlinkID, 
@@ -1453,55 +1448,6 @@ ggsave(filename = 'MS-Olink_cor_rank_color_by_missing.pdf',
 ```
 
 
-All data (retaining values below LOD):
-
-```{r, warning=FALSE}
-
-protein_cor_data %>% 
-ggplot.corrplot(X_var = Perc.Missing.values, Y_var = Correlation_Spearman) +
-  expand_limits(y = c(0, 1.3)) +
-  labs(title = 'MS-Olink correlation vs. missing values',
-       x = 'Proportion of missing values (%)', y = 'MS-Olink correlation') +
-  theme_publ() 
-
-```
-
-```{r}
-
-ggsave(filename = 'MS-Olink_cor_vs_missing_allData.pdf',
-       path = path,
-       width = 8.7,
-       height = 6,
-       units = 'cm',
-       device = cairo_pdf)
-
-```
-
-
-Clean data (removing <LOD values and QC warnings):
-
-```{r, warning=FALSE}
-
-ggplot.corrplot(protein_cor_data, X_var = Perc.Missing.values, 
-                Y_var = Correlation_Spearman.cleanData) +
-  expand_limits(y = c(0, 1.3)) +
-  labs(title = 'MS-Olink correlation vs. missing values',
-       x = 'Proportion of missing values (%)', y = 'MS-Olink correlation') +
-  theme_publ()
-
-```
-
-```{r}
-
-ggsave(filename = 'MS-Olink_cor_vs_missing_cleanData.pdf',
-       path = path,
-       width = 8.7,
-       height = 6,
-       units = 'cm',
-       device = cairo_pdf)
-
-```
-
 
 #### Missing values vs. other factors
 
@@ -1851,7 +1797,7 @@ LOD_per_protein <- overlap_data %>%
 ggplot(LOD_per_protein, aes(x = Below.LOD, y = Correlation, fill = Below.LOD)) +
   geom_boxplot(show.legend = F, lwd = 0.5, width = 0.5) +
   scale_fill_hue(direction = -1) +
-  labs(x = 'LOD', title = 'MS-Olink correlation by LOD') +
+  labs(x = 'Below LOD', title = 'MS-Olink correlation by LOD') +
   theme_publ()
 
 ```
@@ -1882,7 +1828,7 @@ ggplot.corrplot(protein_cor_data, X_var = Perc.below.LOD, Y_var = Correlation_Sp
 
 ```{r}
 
-ggsave(filename = 'MS-Olink_cor_vs_belowLOD_allData.pdf',
+ggsave(filename = 'MS-Olink_cor_vs_belowLOD.pdf',
        path = path,
        width = 8.7,
        height = 6,
@@ -1909,7 +1855,7 @@ ggplot.corrplot(X_var = Perc.below.LOD, Y_var = Correlation_Spearman,
 
 ```{r}
 
-ggsave(filename = 'MS-Olink_cor_vs_belowLOD_allData_noMissingMS.pdf',
+ggsave(filename = 'MS-Olink_cor_vs_belowLOD_noMissingMS.pdf',
        path = path,
        width = 8.7,
        height = 6,
@@ -1917,59 +1863,6 @@ ggsave(filename = 'MS-Olink_cor_vs_belowLOD_allData_noMissingMS.pdf',
        device = cairo_pdf)
 
 ```
-
-
-After setting <LOD values and QC warnings to NA:
-
-```{r, warning=FALSE}
-
-
-ggplot.corrplot(protein_cor_data, X_var = Perc.below.LOD,
-                Y_var = Correlation_Spearman.cleanData) +
-  labs(title = 'MS–Olink correlation vs. values <LOD (Olink)',
-       x = 'Proportion of values <LOD (%)', y = 'MS–Olink correlation') +
-  theme_publ()
-
-```
-
-```{r}
-
-ggsave(filename = 'MS-Olink_cor_vs_belowLOD_cleanData.pdf',
-       path = path,
-       width = 8.7,
-       height = 6,
-       units = 'cm',
-       device = cairo_pdf)
-
-```
-
-
-Proteins that have missing values in only Olink Explore:
-
-```{r}
-
-protein_cor_data %>% 
-  filter(Perc.Missing.MS == 0) %>% 
-  ggplot.corrplot(X_var = Perc.below.LOD, Y_var = Correlation_Spearman.cleanData,
-                  reg_line_params = list(span = 1)) +
-  labs(title = 'MS–Olink correlation vs. values <LOD (Olink)',
-       x = 'Proportion of values <LOD (%)', y = 'MS–Olink correlation') +
-  ylim(c(-0.75,1.2))
-
-
-```
-
-```{r}
-
-ggsave(filename = 'MS-Olink_cor_vs_belowLOD_cleanData_noMissingMS.pdf',
-       path = path,
-       width = 8.7,
-       height = 6,
-       units = 'cm',
-       device = cairo_pdf)
-
-```
-
 
 Dividing into intervals by proportion <LOD:
 
@@ -2106,29 +1999,7 @@ ggplot.corrplot(protein_cor_data, X_var = N.sample.QC.warning, Y_var = Correlati
 
 ```{r, include=FALSE}
 
-ggsave(filename = 'MS-Olink_cor_vs_NQCwarn_allData.pdf',
-       path = path,
-       width = 8.7,
-       height = 6.5,
-       units = 'cm',
-       device = cairo_pdf)
-
-```
-
-
-```{r, warning=FALSE}
-
-ggplot.corrplot(protein_cor_data, X_var = N.sample.QC.warning, 
-                Y_var = Correlation_Spearman.cleanData,
-                reg_line_params = list(method = 'lm')) +
-  labs(title = 'MS-Olink correlation vs. sample QC warnings',
-       x = 'Sample QC warnings', y = 'MS-Olink correlation') 
-
-```
-
-```{r, include==FALSE}
-
-ggsave(filename = 'MS-Olink_cor_vs_NQCwarn_cleanData.pdf',
+ggsave(filename = 'MS-Olink_cor_vs_NQCwarn.pdf',
        path = path,
        width = 8.7,
        height = 6.5,
@@ -2478,8 +2349,6 @@ ggsave(filename = 'protein_conc_per_panel_version.pdf',
 
 #### Missing values (MS)
 
-All data:
-
 ```{r}
 
 protein_cor_data %>% 
@@ -2492,7 +2361,7 @@ ggplot.corrplot(X_var = Perc.Missing.MS, Y_var = Correlation_Spearman) +
 
 ```{r}
 
-ggsave(filename = 'MS-Olink_cor_vs_missing_MS_allData.pdf',
+ggsave(filename = 'MS-Olink_cor_vs_missing_MS.pdf',
        path = path,
        width = 8.7,
        height = 6, 
@@ -2517,54 +2386,7 @@ protein_cor_data %>%
 
 ```{r}
 
-ggsave(filename = 'MS-Olink_cor_vs_missing_MS_noBelowLOD_allData.pdf',
-       path = path,
-       width = 8.7,
-       height = 6, 
-       units = 'cm',
-       device = cairo_pdf)
-
-```
-
-Values <LOD and QC warnings set to NA:
-
-```{r, warning=FALSE}
-
-ggplot.corrplot(protein_cor_data, X_var = Perc.Missing.MS, 
-                Y_var = Correlation_Spearman.cleanData) +
-  labs(title = 'MS–Olink correlation vs. missing values (MS)',
-       x = 'Proportion of missing values (%)', y = 'MS–Olink correlation') +
-  theme_publ()
-
-```
-
-```{r}
-
-ggsave(filename = 'MS-Olink_cor_vs_missing_MS_cleanData.pdf',
-       path = path,
-       width = 8.7,
-       height = 6, 
-       units = 'cm',
-       device = cairo_pdf)
-
-```
-
-Removing proteins with values below the LOD in Olink:
-
-```{r, warning=FALSE}
-
-protein_cor_data %>% 
-  filter(Perc.below.LOD == 0) %>% 
-  ggplot.corrplot(X_var = Perc.Missing.MS, Y_var = Correlation_Spearman.cleanData) +
-  labs(title = 'MS–Olink correlation vs. missing values (MS)',
-       x = 'Proportion of missing values (%)', y = 'MS–Olink correlation') +
-  theme_publ()
-
-```
-
-```{r}
-
-ggsave(filename = 'MS-Olink_cor_vs_missing_MS_noBelowLOD_cleanData.pdf',
+ggsave(filename = 'MS-Olink_cor_vs_missing_MS_noBelowLOD.pdf',
        path = path,
        width = 8.7,
        height = 6, 
@@ -3361,7 +3183,6 @@ ggsave(filename = 'MS-Olink_cor_vs_Nisoforms.pdf',
 
 ## Correlations between different isoforms
 
-
 ```{r}
 
 # MS data with gene names
@@ -3388,6 +3209,13 @@ write.csv(isoforms, file.path(path, 'isoform_correlations.csv'), row.names = FAL
 
 ```
 
+## Session info
+
+```{r}
+
+writeLines(capture.output(sessionInfo()), file.path(path, 'session_info.txt'))
+
+```
 
 
 

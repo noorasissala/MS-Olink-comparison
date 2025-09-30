@@ -15,7 +15,7 @@ calc_tech_CV <- function(ms_data, olink_data) {
            Technical.CV = ifelse(Technical.CV > 100, 100, Technical.CV), # cap CV at 100%
            Technical.CV = ifelse(is.nan(Technical.CV), NA, Technical.CV))
   
-  replicates <- c('LCP27' , 'LCP106' , 'LCP65' , 'LCP76' , 'LCP109' , 'LCP90')
+  replicates <- c('S034' , 'S049' , 'S058' , 'S071' , 'S089' , 'S098')
   
   ms_CV <- ms_data %>% 
     dplyr::select(UniProt, contains(replicates)) %>% 

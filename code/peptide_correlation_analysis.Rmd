@@ -1,0 +1,415 @@
+---
+title: "Peptide correlation analysis"
+author: "Noora Sissala"
+date: "2025-04-09"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+
+library(tidyverse)
+library(RColorBrewer)
+library(ggpubr)
+library(patchwork)
+
+```
+
+## Load data
+
+```{r, message = FALSE}
+
+source('code/utility_functions.R')
+source('code/plotting_functions.R')
+source('code/correlation_analysis_functions.R')
+source('code/peptide_plotting_functions.R')
+
+protein_metadata <- read.csv('data/metadata/protein_metadata.csv')
+
+olink_data <- read_OlinkExplore_data()
+olink_data_wide <- olink_long_to_wide(olink_data, id_cols = 'UniProt')
+ms_data <- read_MS_data()
+
+path <- 'results/peptide_correlations'
+
+```
+
+
+## Example proteins - correlations by region/isoform
+
+```{r}
+
+peptide_cors <- read.csv('results/peptide_correlations/peptide_cors_overlappingProteins_filt.csv')
+peptide_table <- read.delim('data/raw_data/peptides_table.txt')
+
+correlation_palette <- colorRampPalette(rev(brewer.pal(11, 'Spectral')))(100)
+
+```
+
+
+### AMBP
+
+```{r, message=FALSE}
+
+fasta_data <- readRDS('data/processed_data/plasma_data_FASTA3.rds') |>
+  filter(Peptide.label %in% peptide_cors$Peptide.label)
+
+peptide_positions <- peptide_cors |> 
+  left_join(fasta_data[c('Peptide.label', 'Peptide.sequence', 'Gene.Name.MS', 'fasta')]) |> 
+  rowwise() |> 
+  mutate(Peptide.clean = gsub("[0-9\\.\\+]", "", Peptide.sequence),
+         Start = gregexpr(Peptide.clean, fasta, fixed = TRUE)[[1]][1],
+         Start = ifelse(Start == -1, NA, Start),
+         End = Start + nchar(Peptide.clean) - 1) |> 
+  dplyr::select(Peptide.label, Peptide.clean, Gene.Name.MS, UniProt.MS, Start, End, Correlation)
+
+```
+
+
+```{r}
+
+ambp_plot_data <- peptide_positions |> 
+  filter(Gene.Name.MS == 'AMBP') |> 
+  arrange(Start) |> 
+  mutate(Chain = case_when(
+    Start < 203 & End <= 203 ~ 'Alpha-1-microglobulin',
+    Start >= 206 ~ 'Inter-alpha-trypsin inhibitor light chain',
+    TRUE ~ NA_character_))
+
+ambp_plot <- ambp_plot_data |>
+  mutate(Chain = case_when(
+    Chain == 'Alpha-1-microglobulin' ~ 'α1-microglobulin',
+    Chain == 'Inter-alpha-trypsin inhibitor light chain' ~ 'IαI light chain',
+  ),
+  Chain = factor(Chain, levels = c('α1-microglobulin', 'IαI light chain'))) |> 
+  ggplot.jitterbox(Chain, Correlation) +
+  labs(title = 'AMBP peptide correlations',
+       x = 'Region',
+       y = 'Correlation') +
+  theme(legend.position = 'none') +
+  geom_pwc(label.size = 6/.pt, tip.length = 0.02, method = 't.test',
+           label = 'p.signif')
+
+ambp_plot
+
+ambp_plot_data |>
+  group_summary(Correlation, Chain)
+
+
+```
+
+
+### HYOU1
+
+```{r}
+
+hyou1_plot_data <- peptide_positions |> 
+  filter(Gene.Name.MS == 'HYOU1') |> 
+  arrange(Start) |> 
+  mutate(Chain = case_when(
+    Start < 602 & Start >= 88 & End <= 602 ~ 'Shared, isoforms 1 & 2',
+    Start >= 647 ~ 'Isoform 1 specific',
+    TRUE ~ NA_character_)) |> 
+  filter(!is.na(Chain))
+
+hyou1_plot <- hyou1_plot_data |>
+  ggplot.jitterbox(Chain, Correlation) +
+  labs(title = 'HYOU1 peptide correlations',
+       x = 'Region',
+       y = 'Correlation') +
+  theme(legend.position = 'none') +
+  geom_pwc(label.size = 6/.pt, tip.length = 0.02, method = 't.test',
+           label = 'p.signif')
+
+hyou1_plot
+
+hyou1_plot_data |> 
+  group_summary(Correlation, Chain)
+
+```
+
+
+### MASP1
+
+```{r}
+
+masp1_ids <- protein_metadata |> 
+  filter(Gene.Name == 'MASP1') |> 
+  dplyr::select(UniProt, Gene.Name) |> 
+  dplyr::rename(uniprotswissprot = UniProt,
+                hgnc_symbol = Gene.Name)
+
+# Sequences for isoforms from UniProt
+masp1_fasta <- enframe(c('P48740' = 
+  'MRWLLLYYALCFSLSKASAHTVELNNMFGQIQSPGYPDSYPSDSEVTWNITVPDGFRIKLYFMHFNLESSYLCEYDYVKVETEDQVLATFCGRETTDTEQTPGQEVVLSPGSFMSITFRSDFSNEERFTGFDAHYMAVDVDECKEREDEELSCDHYCHNYIGGYYCSCRFGYILHTDNRTCRVECSDNLFTQRTGVITSPDFPNPYPKSSECLYTIELEEGFMVNLQFEDIFDIEDHPEVPCPYDYIKIKVGPKVLGPFCGEKAPEPISTQSHSVLILFHSDNSGENRGWRLSYRAAGNECPELQPPVHGKIEPSQAKYFFKDQVLVSCDTGYKVLKDNVEMDTFQIECLKDGTWSNKIPTCKIVDCRAPGELEHGLITFSTRNNLTTYKSEIKYSCQEPYYKMLNNNTGIYTCSAQGVWMNKVLGRSLPTCLPVCGLPKFSRKLMARIFNGRPAQKGTTPWIAMLSHLNGQPFCGGSLLGSSWIVTAAHCLHQSLDPEDPTLRDSDLLSPSDFKIILGKHWRLRSDENEQHLGVKHTTLHPQYDPNTFENDVALVELLESPVLNAFVMPICLPEGPQQEGAMVIVSGWGKQFLQRFPETLMEIEIPIVDHSTCQKAYAPLKKKVTRDMICAGEKEGGKDACAGDSGGPMVTLNRERGQWYLVGTVSWGDDCGKKDRYGVYSYIHHNKDWIQRVTGVRN',
+  'P48740-2' =
+  'MRWLLLYYALCFSLSKASAHTVELNNMFGQIQSPGYPDSYPSDSEVTWNITVPDGFRIKLYFMHFNLESSYLCEYDYVKVETEDQVLATFCGRETTDTEQTPGQEVVLSPGSFMSITFRSDFSNEERFTGFDAHYMAVDVDECKEREDEELSCDHYCHNYIGGYYCSCRFGYILHTDNRTCRVECSDNLFTQRTGVITSPDFPNPYPKSSECLYTIELEEGFMVNLQFEDIFDIEDHPEVPCPYDYIKIKVGPKVLGPFCGEKAPEPISTQSHSVLILFHSDNSGENRGWRLSYRAAGNECPELQPPVHGKIEPSQAKYFFKDQVLVSCDTGYKVLKDNVEMDTFQIECLKDGTWSNKIPTCKIVDCRAPGELEHGLITFSTRNNLTTYKSEIKYSCQEPYYKMLNNNTGIYTCSAQGVWMNKVLGRSLPTCLPECGQPSRSLPSLVKRIIGGRNAEPGLFPWQALIVVEDTSRVPNDKWFGSGALLSASWILTAAHVLRSQRRDTTVIPVSKEHVTVYLGLHDVRDKSGAVNSSAARVVLHPDFNIQNYNHDIALVQLQEPVPLGPHVMPVCLPRLEPEGPAPHMLGLVAGWGISNPNVTVDEIISSGTRTLSDVLQYVKLPVVPHAECKTSYESRSGNYSVTENMFCAGYYEGGKDTCLGDSGGAFVIFDDLSQRWVVQGLVSWGGPEECGSKQVYGVYTKVSNYVDWVWEQMGLPQSVVEPQVER',
+  'P48740-3' = 
+'MRWLLLYYALCFSLSKASAHTVELNNMFGQIQSPGYPDSYPSDSEVTWNITVPDGFRIKLYFMHFNLESSYLCEYDYVKVETEDQVLATFCGRETTDTEQTPGQEVVLSPGSFMSITFRSDFSNEERFTGFDAHYMAVDVDECKEREDEELSCDHYCHNYIGGYYCSCRFGYILHTDNRTCRVECSDNLFTQRTGVITSPDFPNPYPKSSECLYTIELEEGFMVNLQFEDIFDIEDHPEVPCPYDYIKIKVGPKVLGPFCGEKAPEPISTQSHSVLILFHSDNSGENRGWRLSYRAAGNECPELQPPVHGKIEPSQAKYFFKDQVLVSCDTGYKVLKDNVEMDTFQIECLKDGTWSNKIPTCKKNEIDLESELKSEQVTE'),
+name = 'uniprotswissprot', value = 'fasta')
+
+
+masp1_positions <- peptide_positions |> 
+  filter(Gene.Name.MS == 'MASP1') |> 
+  separate_longer_delim(UniProt.MS, delim = ';') |> 
+  left_join(masp1_fasta, by = join_by(UniProt.MS == uniprotswissprot)) |>
+  rowwise() |>
+  mutate(Start = gregexpr(Peptide.clean, fasta, fixed = TRUE)[[1]][1],
+         Start = ifelse(Start == -1, NA, Start),
+         End = Start + nchar(Peptide.clean) - 1)
+  
+
+```
+
+
+```{r}
+
+masp1_plot_data <- peptide_positions |> 
+  filter(Gene.Name.MS == 'MASP1') 
+
+unique(masp1_plot_data$UniProt.MS)
+
+masp1_plot_data <- masp1_plot_data |> 
+  mutate(Isoform = case_when(
+    UniProt.MS == 'P48740' ~ 'Isoform 1',
+    UniProt.MS == 'P48740-2' ~ 'Isoform 2',
+    UniProt.MS == 'P48740-3' ~ 'Isoform 3',
+    UniProt.MS == 'P48740;P48740-2' ~ 'Multiple isoforms',
+    UniProt.MS == 'P48740;P48740-3;P48740-2' ~ 'Multiple isoforms',
+    TRUE ~ NA_character_))
+
+masp1_plot <- masp1_plot_data |> 
+  ggplot.jitterbox(Isoform, Correlation) +
+  labs(title = 'MASP1 peptide correlations',
+       x = 'Region',
+       y = 'Correlation') +
+  theme(legend.position = 'none') +
+  geom_pwc(ref.group = 'Isoform 2', label.size = 6/.pt, tip.length = 0.02, 
+           method = 't.test', p.adjust.method = 'fdr', label = 'p.adj.signif')
+
+masp1_plot
+
+```
+
+MS MASP1 isoform correlations to Olink on protein level:
+
+```{r}
+
+ms_data2 <- ms_data |> 
+  left_join(protein_metadata[c('UniProt', 'Gene.Name')], by = 'UniProt')
+olink_data_wide2 <- olink_data_wide |>
+  left_join(protein_metadata[c('UniProt', 'Assay')], by = 'UniProt')
+
+gene_cors <- suppressWarnings(
+  cor.test.df(ms_data2, olink_data_wide2, match_by = c('Gene.Name', 'Assay'),
+            cor_type = 'rowwise', cor_method = 'spearman', cols_to_keep = c('UniProt'))) |> 
+  dplyr::rename(UniProt_MS = UniProt.x,
+                UniProt_Olink = UniProt.y)
+
+gene_cors |> 
+  filter(Gene.Name == 'MASP1')
+
+```
+
+
+### CD99
+
+```{r}
+
+
+cd99_plot_data <- peptide_positions |> 
+  filter(Gene.Name.MS == 'CD99') |> 
+  arrange(Start) |> 
+  mutate(Chain = case_when(
+    Start < 122 & End <= 122 ~ 'Extracellular domain',
+    Start >= 148 ~ 'Intracellular domain',
+    TRUE ~ NA_character_))
+
+cd99_plot <- cd99_plot_data |>
+  ggplot.jitterbox(Chain, Correlation) +
+  labs(title = 'CD99 peptide correlations',
+       x = 'Region',
+       y = 'Correlation') +
+  theme(legend.position = 'none') +
+  geom_pwc(label.size = 6/.pt, tip.length = 0.02, method = 't.test',
+           label = 'p.signif')
+
+cd99_plot
+
+cd99_plot_data |>
+  group_summary(Correlation, Chain)
+
+
+```
+
+
+### Combine plots
+
+```{r, fig.height=5, fig.width=5}
+
+set.seed(1)
+ambp_plot + cd99_plot + hyou1_plot + masp1_plot &
+  labs(y = 'MS-Olink correlation')
+
+
+```
+
+```{r}
+
+ggsave(filename = 'correlation_by_protein_region_examples.pdf',
+       path = path,
+       width = 15,
+       height = 12,
+       units = 'cm',
+       device = cairo_pdf)
+
+```
+
+
+## Peptide mapping plots
+
+### AMBP
+
+```{r}
+
+# 20-203 is α1-microglobulin, 206-352 is IαI light chain
+# 284-344 is trypstatin
+# cleavage: 199
+ambp_ann_df <- data.frame(
+  start = c(284, 206, 20),
+  end = c(344, 352, 203),
+  feature = c('Trypstatin', 'IαI light chain', 'α1-microglobulin'),
+  stringsAsFactors = FALSE
+)
+
+ambp_ann <- create_annotation(
+  ambp_ann_df, seq_length = nchar(filter(fasta_data, Gene.Name == 'AMBP')$fasta)
+  )
+
+ambp_plot <- heatmap_density_plot(
+  'AMBP',
+  peptide_seq_list_file = 'data/processed_data/peptide_seq_list2.rds',
+  fasta_data = fasta_data,
+  annotations = ambp_ann,
+  ann_height = 37.5,
+  hm_height = 150,
+  density_height = 100,
+  path = path,
+  ann_palette = setNames(brewer.pal(8, 'Paired')[c(3, 4, 1)],
+                         ambp_ann_df$feature)
+)
+
+
+```
+
+### HYOU1
+
+```{r}
+
+# 1-87 is missing in isoform 2
+# 603-646 differs between isoforms
+# 647-999 is missing in isoform 2
+hyou1_ann_df <- data.frame(
+  start = c(1, 647, 88),
+  end = c(87, 999, 646),
+  feature = c('Isoform 1', 'Isoform 1', 'Multiple isoforms'),
+  stringsAsFactors = FALSE
+)
+
+hyou1_ann <- create_annotation(
+  hyou1_ann_df, seq_length = nchar(filter(fasta_data, Gene.Name == 'HYOU1')$fasta)
+  )
+
+hyou1_plot <- heatmap_density_plot(
+  'HYOU1',
+  peptide_seq_list_file = 'data/processed_data/peptide_seq_list2.rds',
+  fasta_data = fasta_data,
+  annotations = hyou1_ann,
+  ann_height = 25,
+  hm_height = 70,
+  density_height = 100,
+  path = path,
+  ann_palette = setNames(
+    brewer.pal(4, 'Paired')[c(2,1)],
+    unique(hyou1_ann_df$feature))
+)
+
+```
+
+### MASP1
+
+```{r}
+
+# Note: The fasta sequence in fasta_data is for isoform 2 !!
+# Positions in isoform 2 sequence:
+# 1-434 is shared between isoforms 1 and 2
+# 1-363 is also in isoform 3
+# 435-728 is isoform 2 specific
+
+masp1_ann_df <- data.frame(
+  start = c(435, 1),
+  end = c(728, 434),
+  feature = c('Isoform 2', 'Multiple isoforms'),
+  stringsAsFactors = FALSE
+)
+
+masp1_ann <- create_annotation(
+  masp1_ann_df, seq_length = nchar(filter(fasta_data, Gene.Name == 'MASP1')$fasta)
+  )
+
+# Peptides mapped to the isoform 2 sequence:
+masp1_plot <- heatmap_density_plot(
+  'MASP1',
+  peptide_seq_list_file = 'data/processed_data/peptide_seq_list2.rds',
+  fasta_data = fasta_data,
+  annotations = masp1_ann,
+  ann_height = 25,
+  hm_height = 50,
+  density_height = 100,
+  path = path,
+  ann_palette = setNames(brewer.pal(2, 'Paired')[c(2,1)],
+                         masp1_ann_df$feature)
+)
+
+```
+
+### CD99
+
+```{r}
+
+# 1-122 is extracellular, 148-185 is intracellular
+
+cd99_ann_df <- data.frame(
+  start = c(1, 148),
+  end = c(122, 185),
+  feature = c('Extracellular domain', 'Intracellular domain'),
+  stringsAsFactors = FALSE
+)
+
+cd99_ann <- create_annotation(
+  cd99_ann_df, seq_length = nchar(filter(fasta_data, Gene.Name == 'CD99')$fasta)
+  )
+
+cd99_plot <- heatmap_density_plot(
+  'CD99',
+  peptide_seq_list_file = 'data/processed_data/peptide_seq_list2.rds',
+  fasta_data = fasta_data,
+  annotations = cd99_ann,
+  ann_height = 25,
+  hm_height = 50,
+  density_height = 100,
+  path = path,
+  ann_palette = setNames(brewer.pal(4, 'Paired')[c(2,1)],
+                         cd99_ann_df$feature)
+)
+
+
+```
+
+## Session info
+
+```{r}
+
+writeLines(capture.output(sessionInfo()), file.path(path, 'peptide_correlation_analysis_session_info.txt'))
+
+```
+
