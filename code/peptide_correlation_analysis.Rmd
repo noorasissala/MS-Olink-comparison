@@ -73,14 +73,14 @@ ambp_plot_data <- peptide_positions |>
   mutate(Chain = case_when(
     Start < 203 & End <= 203 ~ 'Alpha-1-microglobulin',
     Start >= 206 ~ 'Inter-alpha-trypsin inhibitor light chain',
-    TRUE ~ NA_character_))
+    TRUE ~ NA_character_)) |> 
+    mutate(Chain = case_when(
+      Chain == 'Alpha-1-microglobulin' ~ 'α1-microglobulin',
+      Chain == 'Inter-alpha-trypsin inhibitor light chain' ~ 'IαI light chain'
+      ),
+      Chain = factor(Chain, levels = c('α1-microglobulin', 'IαI light chain')))
 
 ambp_plot <- ambp_plot_data |>
-  mutate(Chain = case_when(
-    Chain == 'Alpha-1-microglobulin' ~ 'α1-microglobulin',
-    Chain == 'Inter-alpha-trypsin inhibitor light chain' ~ 'IαI light chain',
-  ),
-  Chain = factor(Chain, levels = c('α1-microglobulin', 'IαI light chain'))) |> 
   ggplot.jitterbox(Chain, Correlation) +
   labs(title = 'AMBP peptide correlations',
        x = 'Region',

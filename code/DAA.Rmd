@@ -224,19 +224,16 @@ DAA <- function(ms_data, olink_data, test_grp, ref_grp, path, filename,
   ms_sig <- filter(ms_res, adj.p < 0.05) %>% pull(UniProt)
   olink_sig <- filter(olink_res, adj.p < 0.05) %>% pull(UniProt)
   
-  # Calculate set sizes
-  n_ms <- length(setdiff(ms_sig, olink_sig))
-  n_olink <- length(setdiff(olink_sig, ms_sig))
-  n_overlap <- length(intersect(ms_sig, olink_sig))
+  venn_data <- data.frame(UniProt = union(ms_sig, olink_sig)) |> 
+    mutate(MS = UniProt %in% ms_sig,
+           Olink = UniProt %in% olink_sig)
   
   # Plot and save Venn diagram
   pdf(file = paste0(path, '/DAA_sex_venn_', filename, '.pdf'),
       width = 5*0.393701, height = 5*0.393701)
   
     venn_diag <- plot(euler(
-      combinations = c('MS' = n_ms,
-                       'Olink' = n_olink,
-                       'MS&Olink' = n_overlap)),
+      combinations = venn_data[c('MS', 'Olink')]),
       fills = list(fill = TDP_palette[c(1,4)], alpha = 0.5), 
       edges = list(lwd = 2.5, col = TDP_palette[c(1,4)]),
       quantities = list(fontsize = 7, font = 'regular', fontfamily = 'Helvetica'), 
@@ -461,24 +458,6 @@ daa_res_no_missing_overlap <- DAA(
   protein_metadata = protein_metadata)
 
 ```
-
-
-### Overlapping proteins - no NAs (no missing values in MS, all Olink proteins)
-
-```{r}
-
-daa_res_noNA_overlap <- DAA(
-  filter(ms_noNA, UniProt %in% overlap_no_NA),
-  filter(olink_data_wide, UniProt %in% overlap_no_NA),
-  test_grp = female,
-  ref_grp = male,
-  path = path,
-  filename = 'noNA_overlappingProteins',
-  protein_metadata = protein_metadata)
-
-
-```
-
 
 ## Technical CVs by significance in DAA
 

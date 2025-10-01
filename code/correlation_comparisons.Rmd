@@ -978,7 +978,7 @@ median_df
 
 ggsave(filename = 'Eldjarn_confidence_tier_cors.pdf',
        path = path,
-       width = 8.7,
+       width = 8.3,
        height = 7.5,
        units = 'cm')
 

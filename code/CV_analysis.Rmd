@@ -228,7 +228,7 @@ ggplot(technical_CVs, aes(x = Technical.CV, fill = Platform, color = Platform)) 
 
 ggsave(filename = 'technical_CV_hist.pdf',
        path = path,
-       width = 8.7,
+       width = 8.3,
        height = 6,
        units = 'cm')
 
@@ -276,7 +276,7 @@ CV_per_interval |>
 
 ggsave(filename = 'technical_CV_intervals_barplot.pdf',
        path = path,
-       width = 8.7,
+       width = 8.3,
        height = 6,
        units = 'cm')
 
@@ -347,7 +347,7 @@ pval2
 
 ggsave(filename = 'technical_CV_hist_overlappingProteins.pdf',
        path = path,
-       width = 8.7,
+       width = 8.3,
        height = 6,
        units = 'cm')
 
@@ -588,7 +588,7 @@ ggplot(peptide_CVs, aes(x = Technical.CV)) +
 
 ggsave(filename = 'peptide_CV_hist.pdf',
        path = path,
-       width = 8.7,
+       width = 8.3,
        height = 6,
        units = 'cm')
 
