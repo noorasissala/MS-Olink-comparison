@@ -703,7 +703,7 @@ ridgeplot(HPA_GSEA) +
 
 ggsave(filename = 'MS-Olink_cor_GSEA_HPA_ridgeplot.pdf',
        path = path,
-       width = 6,
+       width = 5.8,
        height = 6,
        units = 'cm')
 
@@ -1441,7 +1441,7 @@ protein_cor_data %>%
 
 ggsave(filename = 'MS-Olink_cor_rank_color_by_missing.pdf',
        path = path,
-       width = 8.7,
+       width = 8.3,
        height = 7.5,
        units = 'cm')
 
@@ -1876,7 +1876,7 @@ intervals_olink <- protein_cor_data |>
   mutate(Interval = cut(Perc.below.LOD, breaks = seq(-25, 100, 25),
                         right = TRUE,
                         labels = intervals)) |> 
-  dplyr::select(Correlation_Spearman, Perc.below.LOD, Interval)
+  dplyr::select(UniProt, Correlation_Spearman, Perc.below.LOD, Interval)
 
 intervals_olink |> 
   count(Interval)
@@ -1903,7 +1903,7 @@ stat_test <- intervals_olink |>
 set.seed(1)
 NA_plot_olink <- intervals_olink |> 
   ggplot(aes(x = Interval, y = Correlation_Spearman)) +
-  geom_jitter(aes(color = Interval), width = 0.35, size = 0.5, seed = 1) +
+  geom_jitter(aes(color = Interval), width = 0.35, size = 0.5) +
     geom_boxplot(aes(fill = Interval), alpha = 0.3,
                  outliers = F) +
   ylim(c(-0.75,1.35)) +
@@ -1924,7 +1924,7 @@ ggsave(NA_plot_olink,
        filename = 'MS-Olink_cor_vs_belowLOD_boxplot.pdf',
        path = path,
        width = 5.5,
-       height = 6,
+       height = 5.8,
        units = 'cm')
 
 ```
@@ -2130,6 +2130,36 @@ ggsave(filename = 'MS-Olink_cor_QCwarn_boxplots.pdf',
        units = 'cm')
 
 ```
+
+
+Samples with a QC warning:
+
+```{r}
+
+plot_data <- olink_data %>%
+  filter(QC_Warning == 'WARN') %>%
+  group_by(Sample.ID) %>%
+  count(QC_Warning) %>%
+  mutate(Perc = n / nrow(olink_data_wide) * 100)
+
+ggplot(plot_data, aes(x = reorder(Sample.ID, Perc), y = Perc)) +
+  geom_col(fill = 'steelblue', alpha = 0.9) +
+  labs(x = 'Sample', y = 'Proportion of QC warnings (%)',
+       title = 'Olink sample QC warnings per sample') +
+  theme_publ() +
+  theme(axis.text.x = element_blank(),
+        axis.ticks.x = element_blank()) +
+  scale_y_continuous(expand = expansion(mult = c(0, 0.05)),
+                     breaks = seq(0,10,1))
+
+ggsave(filename = 'Olink_QCwarn_per_sample.pdf',
+       path = path,
+       width = 8.7,
+       height = 6,
+       units = 'cm')
+
+```
+
 
 
 #### Olink panel
@@ -2406,7 +2436,7 @@ intervals_ms <- protein_cor_data |>
   mutate(Interval = cut(Perc.Missing.MS, breaks = seq(-25, 100, 25),
                         right = TRUE, 
                         labels = intervals)) |> 
-  dplyr::select(Correlation_Spearman, Perc.Missing.MS, Interval)
+  dplyr::select(UniProt, Correlation_Spearman, Perc.Missing.MS, Interval)
 
 intervals_ms |> 
   count(Interval)
@@ -2454,7 +2484,7 @@ ggsave(NA_plot_MS,
        filename = 'MS-Olink_cor_vs_missing_MS_boxplot.pdf',
        path = path,
        width = 5.5,
-       height = 6, 
+       height = 5.8, 
        units = 'cm')
 
 ```
@@ -2617,7 +2647,7 @@ ggsave(filename = 'protein_conc_vs_medianPSMs.pdf',
 
 ggplot.corrplot(protein_cor_data, X_var = median.Unique.peptides, Y_var = Correlation_Spearman,
                 title = 'MS-Olink correlation vs. #unique peptides',
-                xlab = 'Median #unique peptides across TMT sets',
+                xlab = 'Median unique peptides across TMT sets',
                 ylab = 'MS-Olink correlation') +
   scale_x_continuous(trans = 'log10') +
   small_logticks('b')
@@ -2638,14 +2668,14 @@ ggsave(filename = 'MS-Olink_cor_vs_medianPeptides.pdf',
 
 ggplot.corrplot(protein_cor_data, X_var = median.Unique.peptides, Y_var = Correlation_Spearman,
                 title = 'Number of unique peptides (MS)',
-                xlab = 'Median #unique peptides across TMT sets',
+                xlab = 'Median unique peptides across TMT sets',
                 ylab = 'MS-Olink correlation') +
   scale_x_continuous(trans = 'log10') +
   small_logticks('b')
 
 ggsave(filename = 'MS-Olink_cor_vs_medianPeptides_small.pdf',
        path = path,
-       width = 6,
+       width = 5.8,
        height = 6, 
        units = 'cm',
        device = cairo_pdf)

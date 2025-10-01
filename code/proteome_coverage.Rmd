@@ -40,6 +40,13 @@ ms_data_all <- read_MS_data(withReplicateSamples = TRUE)
 ms_data <- read_MS_data()
 
 # Olink Explore data
+
+# All Olink assays
+olink_data_all <- read_OlinkExplore_data(
+  removeAllLOD = FALSE, 
+  withReplicateAssays = TRUE)
+
+# Detected Olink assays
 olink_data <- read_OlinkExplore_data(withControlSamples = FALSE,
                                      withBelowLOD = TRUE,
                                      withQCWarning = TRUE,
@@ -60,6 +67,22 @@ ms_data_overlap <- ms_data[colnames(ms_data) %in% colnames(olink_data_wide)]
 protein_metadata <- read.csv('data/metadata/protein_metadata.csv') |> 
   filter(UniProt %in% ms_data$UniProt | OlinkID %in% olink_data$OlinkID)
 
+# Load data from the Human Plasma Proteome Project (HPPP) (PeptideAtlas build 2023-04):
+hppp <- read.csv('data/external_data/HPPP_build2023-04.csv')
+hppp <- hppp$biosequence_accession
+
+# Load data from the Human Protein Atlas
+hpa_data <- read.delim('data/processed_data/HPA_v24_clean.txt')
+
+# HPA plasma proteome: proteins with a known blood concentration or 
+# annotated as secreted to blood
+hpa_plasma <- hpa_data |> 
+  filter(!is.na(Blood.conc.pgL) | Secretome.location == 'Secreted to blood')
+
+# Reference plasma proteome
+# HPPP + HPA plasma proteins
+plasma_proteome <- union(hppp, hpa_plasma$Uniprot)
+length(plasma_proteome)
 
 ```
 
@@ -166,8 +189,71 @@ error = function(e) {
 
 ## Detected proteins and MS-Olink overlap
 
+
+Table of detected proteins:
+
 ```{r}
 
+missing_MS <- enframe(
+  setNames(rowSums(is.na(ms_data_overlap[-1])), ms_data_overlap$UniProt), 
+  name = 'UniProt', value = 'N.Missing.MS') |> 
+  mutate(Perc.Missing.MS = N.Missing.MS/(ncol(ms_data_overlap)-1)*100)
+
+ms_protein_metadata <- read.csv('data/metadata/protein_metadata_MS.csv',
+                           row.names = 1) |> 
+  dplyr::select(1:3) |> 
+  inner_join(missing_MS[c('UniProt', 'Perc.Missing.MS')], by = 'UniProt')
+
+missing_Olink <- olink_data_all |> 
+  mutate(Below.LOD = NPX < LOD) |> 
+  group_by(UniProt, OlinkID) |>
+  summarize(N.Missing.Olink = sum(Below.LOD),
+            Perc.Missing.Olink = N.Missing.Olink/n()*100)
+
+olink_protein_metadata <- olink_data_all|> 
+  distinct(OlinkID, UniProt, Assay, Panel, Panel_Lot_Nr, PlateID) |> 
+  left_join(missing_Olink[c('UniProt', 'OlinkID', 'Perc.Missing.Olink')], 
+            by = c('UniProt', 'OlinkID'))
+
+protein_table <- full_join(ms_protein_metadata, olink_protein_metadata, by = 'UniProt') |> 
+  mutate(Analyzed.MS = !is.na(Gene.Name),
+         Analyzed.Olink = !is.na(Assay),
+         Detected.MS = Analyzed.MS & Perc.Missing.MS < 100,
+         Detected.Olink = Analyzed.Olink & Perc.Missing.Olink < 100,
+         Overlapping = Detected.MS & Detected.Olink,
+         Detected.Platform = case_when(Detected.MS & Detected.Olink ~ 'Both',
+                                       Detected.MS & !Detected.Olink ~ 'MS',
+                                       Detected.Olink & !Detected.MS ~ 'Olink',
+                                       TRUE ~ 'None'),
+         In.HPA = UniProt %in% hpa_data$Uniprot, # Is protein in the HPA
+         In.HPA.Plasma = UniProt %in% hpa_plasma$Uniprot, # Does protein have a blood concentration in HPA or is it classified as secreted to blood
+         In.HPPP = UniProt %in% hppp, # Is protein in the Plasma section of the PeptideAtlas (Human Plasma Proteome Project)
+         In.Ref.Plasma.Proteome = UniProt %in% plasma_proteome) |> # Is protein in the reference plasma proteome
+  dplyr::select(UniProt, Gene.Name, Description, # MS protein information
+                OlinkID, Assay, Panel, Panel_Lot_Nr, PlateID, # Olink protein information
+                Analyzed.MS, Detected.MS, Perc.Missing.MS, # MS detection information
+                Analyzed.Olink, Detected.Olink, Perc.Missing.Olink, # Olink detection information
+                everything())
+
+write.csv(protein_table, file.path(path, 'detected_proteins.csv'),
+          row.names = FALSE)
+
+```
+
+```{r}
+
+# Detected proteins with no replicate Olink assays
+detected_proteins <- protein_table |> 
+  group_by(UniProt) |> 
+  summarize(Detected.MS = any(Detected.MS),
+            Detected.Olink = any(Detected.Olink),
+            In.HPA = any(In.HPA),
+            In.HPA.Plasma = any(In.HPA.Plasma),
+            In.HPPP = any(In.HPPP),
+            In.Ref.Plasma.Proteome = any(In.Ref.Plasma.Proteome)) |> 
+  dplyr::rename(MS = Detected.MS, Olink = Detected.Olink)
+
+# Vectors of detected proteins
 olink_proteins <- unique(olink_data$UniProt)
 ms_proteins <- unique(ms_data$UniProt)
 all_proteins <- union(olink_proteins, ms_proteins)
@@ -180,19 +266,11 @@ Venn diagram of detected proteins:
 
 ```{r}
 
-# Calculate the number of proteins in each area of the venn diagram
-n_ms <- length(setdiff(ms_proteins, olink_proteins))
-n_olink <- length(setdiff(olink_proteins, ms_proteins))
-
-n_overlap <- length(overlap)
-
 pdf(file = paste0(path, '/venn_MS_Olink.pdf'),
     width = 5*0.393701, height = 5*0.393701)
-  # Plot the venn diagram
+
   p <- plot(euler(
-    combinations = c('MS' = n_ms, 
-                     'Olink' = n_olink, 
-                     'MS&Olink' = n_overlap)),
+    combinations = detected_proteins[c('MS', 'Olink')]),
     fills = list(fill = TDP_palette[c(1,4)], alpha = 0.5),
     edges = list(lwd = 2.5, col = TDP_palette[c(1,4)]), 
     quantities = list(fontsize = 7, font = 'regular', fontfamily = 'Helvetica'), 
@@ -220,63 +298,24 @@ p
 
 The reference plasma proteome was compiled from proteins in the Plasma section of the PeptideAtlas + proteins with a known blood concentration or secretome location = "Secreted to blood" in the Human Protein Atlas (HPA).
 
-Load data from the Human Plasma Proteome Project (HPPP) (PeptideAtlas build 2023-04):
-
-```{r}
-
-# Load data on the plasma proteome (from HPPP build 2023-04)
-hppp <- read.csv('data/external_data/HPPP_build2023-04.csv')
-hppp <- hppp$biosequence_accession
-
-```
-
-Load data from HPA:
-
-```{r}
-
-hpa_data <- read.delim('data/processed_data/HPA_v24_clean.txt')
-
-hpa_plasma <- hpa_data |> 
-  filter(!is.na(Blood.conc.pgL) | Secretome.location == 'Secreted to blood')
-
-```
-
-
-The reference plasma proteome: 
-
-```{r}
-
-plasma_proteome <- union(hppp, hpa_plasma$Uniprot)
-length(plasma_proteome)
-
-```
 
 Venn diagram of detected proteins and the reference plasma proteome:
 
 ```{r}
 
-n_ms <- length(setdiff(ms_proteins, union(olink_proteins, plasma_proteome)))
-n_olink <- length(setdiff(olink_proteins, union(ms_proteins, plasma_proteome)))
-n_plasma <- length(setdiff(plasma_proteome, union(ms_proteins, olink_proteins)))
-
-overlap_all <- intersect(intersect(ms_proteins, olink_proteins), plasma_proteome)
-n_overlap_all <- length(overlap_all)
-
-n_ms_olink <- length(setdiff(overlap, overlap_all))
-n_ms_plasma <- length(setdiff(intersect(ms_proteins, plasma_proteome), overlap_all))
-n_olink_plasma <- length(setdiff(intersect(olink_proteins, plasma_proteome), overlap_all))
+all_proteins_df <- data.frame(UniProt = plasma_proteome) |> 
+  mutate(Plasma.proteome = TRUE) |> 
+  full_join(detected_proteins[c('UniProt', 'MS', 'Olink')], by = 'UniProt') |> 
+  mutate(MS = ifelse(is.na(MS), FALSE, MS),
+         Olink = ifelse(is.na(Olink), FALSE, Olink),
+         Plasma.proteome = ifelse(is.na(Plasma.proteome), FALSE, Plasma.proteome))
 
 pdf(file = paste0(path, '/venn_MS_Olink_plasmaProteome.pdf'),
     width = 4*0.393701, height = 5*0.393701)
 
   p <- plot(euler(
-    combinations = c('MS' = n_ms,
-                     'Olink' = n_olink,
-                     'Plasma proteome' = n_plasma,
-                     'MS&Olink' = n_ms_olink,
-                     'MS&Plasma proteome' = n_ms_plasma,
-                     'Olink&Plasma proteome' = n_olink_plasma,
-                     'MS&Olink&Plasma proteome' = n_overlap_all)),
+    combinations = setNames(all_proteins_df[c('MS', 'Olink', 'Plasma.proteome')],
+                            c('MS', 'Olink', 'Plasma proteome'))),
     fills = list(fill = TDP_palette[c(1,4,7)], alpha = 0.5), 
     edges = list(lwd = 2.5, col = TDP_palette[c(1,4,7)]),
     quantities = list(fontsize = 7, font = 'regular', fontfamily = 'Helvetica'), 
@@ -302,13 +341,6 @@ p
 
 ## Plasma proteome coverage
 
-```{r}
-
-length(intersect(all_proteins, plasma_proteome))
-length(intersect(all_proteins, plasma_proteome))/length(plasma_proteome)*100
-
-
-```
 
 Bar plot of plasma proteome coverage:
 
@@ -372,11 +404,6 @@ ggsave(filename = 'plasma_proteome_coverage.pdf',
 
 ```{r}
 
-# Load data for all Olink assays
-olink_data_all <- read_OlinkExplore_data(
-  removeAllLOD = FALSE, 
-  withReplicateAssays = TRUE)
-
 # Get the total number of protein assays per panel
 proteins_per_panel <- olink_data_all |>
     group_by(Panel) |>
@@ -420,63 +447,13 @@ ggsave(filename = 'overlap_per_panel.pdf',
 ```
 
 
-## Table of detected proteins
-
-```{r}
-
-missing_MS <- enframe(
-  setNames(rowSums(is.na(ms_data_overlap[-1])), ms_data_overlap$UniProt), 
-  name = 'UniProt', value = 'N.Missing.MS') |> 
-  mutate(Perc.Missing.MS = N.Missing.MS/(ncol(ms_data_overlap)-1)*100)
-
-ms_protein_metadata <- read.csv('data/metadata/protein_metadata_MS.csv',
-                           row.names = 1) |> 
-  dplyr::select(1:3) |> 
-  inner_join(missing_MS[c('UniProt', 'Perc.Missing.MS')], by = 'UniProt')
-
-missing_Olink <- olink_data_all |> 
-  mutate(Below.LOD = NPX < LOD) |> 
-  group_by(UniProt, OlinkID) |>
-  summarize(N.Missing.Olink = sum(Below.LOD),
-            Perc.Missing.Olink = N.Missing.Olink/n()*100)
-
-olink_protein_metadata <- olink_data_all|> 
-  distinct(OlinkID, UniProt, Assay, Panel, Panel_Lot_Nr, PlateID) |> 
-  left_join(missing_Olink[c('UniProt', 'OlinkID', 'Perc.Missing.Olink')], 
-            by = c('UniProt', 'OlinkID'))
-
-protein_table <- full_join(ms_protein_metadata, olink_protein_metadata, by = 'UniProt') |> 
-  mutate(Analyzed.MS = !is.na(Gene.Name),
-         Analyzed.Olink = !is.na(Assay),
-         Detected.MS = Analyzed.MS & Perc.Missing.MS < 100,
-         Detected.Olink = Analyzed.Olink & Perc.Missing.Olink < 100,
-         Overlapping = Detected.MS & Detected.Olink,
-         Detected.Platform = case_when(Detected.MS & Detected.Olink ~ 'Both',
-                                       Detected.MS & !Detected.Olink ~ 'MS',
-                                       Detected.Olink & !Detected.MS ~ 'Olink',
-                                       TRUE ~ 'None'),
-         In.HPA = UniProt %in% hpa_data$Uniprot, # Is protein in the HPA
-         In.HPA.Plasma = UniProt %in% hpa_plasma$Uniprot, # Does protein have a blood concentration in HPA or is it classified as secreted to blood
-         In.HPPP = UniProt %in% hppp, # Is protein in the Plasma section of the PeptideAtlas (Human Plasma Proteome Project)
-         In.Ref.Plasma.Proteome = UniProt %in% plasma_proteome) |> # Is protein in the reference plasma proteome
-  dplyr::select(UniProt, Gene.Name, Description, # MS protein information
-                OlinkID, Assay, Panel, Panel_Lot_Nr, PlateID, # Olink protein information
-                Analyzed.MS, Detected.MS, Perc.Missing.MS, # MS detection information
-                Analyzed.Olink, Detected.Olink, Perc.Missing.Olink, # Olink detection information
-                everything())
-
-write.csv(protein_table, file.path(path, 'detected_proteins.csv'),
-          row.names = FALSE)
-
-```
-
-
 ## Missing values and detected proteins
 
 
 Check whether replicate Olink assays have values <LOD
 
 ```{r}
+
 replicate_assays <- olink_data |> 
   group_by(UniProt) |>
   summarise(N = n_distinct(OlinkID)) |> 
@@ -673,7 +650,7 @@ conc_plot
 ggsave(conc_plot,
        filename = 'NAs_vs_conc_boxplot.pdf',
        path = path,
-       width = 8.7, 
+       width = 8.3, 
        height = 6.5,
        units = 'cm',
        device = 'pdf')
@@ -755,12 +732,11 @@ p1
 
 ```{r}
 
-ms_unique <- setdiff(ms_proteins, olink_proteins)
-olink_unique <- setdiff(olink_proteins, ms_proteins)
+conc_data_detected <- conc_data_detected %>% 
+  mutate(All.detected.proteins = TRUE,
+         Detected.one.method.only = Uniprot %in% setdiff(all_proteins, overlap))
 
-unique_conc_data <- filter(conc_data_detected, 
-                           Uniprot %in% ms_unique & Platform == 'MS' | 
-                             Uniprot %in% olink_unique & Platform == 'Olink')
+unique_conc_data <- filter(conc_data_detected, Detected.one.method.only)
 
 ```
 
@@ -865,7 +841,7 @@ ggplot.histogram(Blood.conc.ngmL, Fill_var = Platform, breaks = 10^(seq(-3, 8, 0
 
 ggsave(filename = 'HPA_bloodConc_plasmaProteomeCoverage.pdf',
        path = path,
-       width = 8.7,
+       width = 8.3,
        height = 6.5,
        units = 'cm')
 
@@ -881,6 +857,24 @@ Note: proportion of missing values for MS was calculated based on overlapping sa
 ### Detected proteins and MS-Olink overlap
 
 ```{r}
+
+protein_table_max50NA <- protein_table |> 
+  filter(Perc.Missing.MS <= 50 | Perc.Missing.Olink <= 50) |> 
+  mutate(Detected.MS = Perc.Missing.MS <= 50,
+         Detected.MS = ifelse(is.na(Detected.MS), FALSE, Detected.MS),
+         Detected.Olink = Perc.Missing.Olink <= 50,
+         Detected.Olink = ifelse(is.na(Detected.Olink), FALSE, Detected.Olink))
+
+detected_proteins_max50NA <- protein_table_max50NA |> 
+  group_by(UniProt) |> 
+  summarize(Detected.MS = any(Detected.MS),
+            Detected.Olink = any(Detected.Olink),
+            In.HPA = any(In.HPA),
+            In.HPA.Plasma = any(In.HPA.Plasma),
+            In.HPPP = any(In.HPPP),
+            In.Ref.Plasma.Proteome = any(In.Ref.Plasma.Proteome)) |> 
+  dplyr::rename(MS = Detected.MS, Olink = Detected.Olink)
+
 
 ms_proteins_filtered <- missing_MS |> 
   filter(Perc.Missing.MS <= 50) |> 
@@ -900,17 +894,11 @@ Venn diagram of detected proteins with max 50% missing values:
 
 ```{r}
 
-n_ms <- length(setdiff(ms_proteins_filtered, olink_proteins_filtered))
-n_olink <- length(setdiff(olink_proteins_filtered, ms_proteins_filtered))
-
-n_overlap <- length(overlap_filtered)
 
 pdf(file = paste0(path, '/venn_MS_Olink_max50percNA.pdf'),
     width = 4*0.393701, height = 4*0.393701)
   p <- plot(euler(
-    combinations = c('MS' = n_ms, 
-                     'Olink' = n_olink, 
-                     'MS&Olink' = n_overlap)), 
+    combinations = detected_proteins_max50NA[c('MS', 'Olink')]),
     fills = list(fill = TDP_palette[c(1,4)], alpha = 0.5), 
     edges = list(lwd = 2.5, col = TDP_palette[c(1,4)]), 
     quantities = list(fontsize = 7, font = 'regular', fontfamily = 'Helvetica'), 
@@ -939,28 +927,19 @@ Venn diagram of detected proteins with max 50% missing values and the reference 
 
 ```{r}
 
-n_ms <- length(setdiff(ms_proteins_filtered, union(olink_proteins_filtered, plasma_proteome)))
-n_olink <- length(setdiff(olink_proteins_filtered, union(ms_proteins_filtered, plasma_proteome)))
-n_plasma <- length(setdiff(plasma_proteome, union(ms_proteins_filtered, olink_proteins_filtered)))
-
-overlap_all <- intersect(intersect(ms_proteins_filtered, olink_proteins_filtered), plasma_proteome)
-n_overlap_all <- length(overlap_all)
-
-n_ms_olink <- length(setdiff(overlap_filtered, overlap_all))
-n_ms_plasma <- length(setdiff(intersect(ms_proteins_filtered, plasma_proteome), overlap_all))
-n_olink_plasma <- length(setdiff(intersect(olink_proteins_filtered, plasma_proteome), overlap_all))
+all_proteins_max50NA_df <- data.frame(UniProt = plasma_proteome) |> 
+  mutate(Plasma.proteome = TRUE) |> 
+  full_join(detected_proteins_max50NA[c('UniProt', 'MS', 'Olink')], by = 'UniProt') |> 
+  mutate(MS = ifelse(is.na(MS), FALSE, MS),
+         Olink = ifelse(is.na(Olink), FALSE, Olink),
+         Plasma.proteome = ifelse(is.na(Plasma.proteome), FALSE, Plasma.proteome))
 
 pdf(file = paste0(path, '/venn_MS_Olink_plasmaProteome_max50percNA.pdf'),
     width = 4*0.393701, height = 5*0.393701)
 
   p <- plot(euler(
-    combinations = c('MS' = n_ms,
-                     'Olink' = n_olink,
-                     'Plasma proteome' = n_plasma,
-                     'MS&Olink' = n_ms_olink,
-                     'MS&Plasma proteome' = n_ms_plasma,
-                     'Olink&Plasma proteome' = n_olink_plasma,
-                     'MS&Olink&Plasma proteome' = n_overlap_all)),
+    combinations = setNames(all_proteins_max50NA_df[c('MS', 'Olink', 'Plasma.proteome')],
+                            c('MS', 'Olink', 'Plasma proteome'))),
     fills = list(fill = TDP_palette[c(1,4,7)], alpha = 0.5), 
     edges = list(lwd = 2.5, col = TDP_palette[c(1,4,7)]),
     quantities = list(fontsize = 7, font = 'regular', fontfamily = 'Helvetica'), 
@@ -984,14 +963,6 @@ p
 
 
 ### Plasma proteome coverage
-
-```{r}
-
-length(intersect(all_proteins_filtered, plasma_proteome))
-length(intersect(all_proteins_filtered, plasma_proteome))/length(plasma_proteome)*100
-
-
-```
 
 
 ```{r}
@@ -1160,12 +1131,11 @@ Uniquely detected proteins with max 50% missing values:
 
 ```{r}
 
-ms_unique_max50NA <- setdiff(ms_proteins_filtered, olink_proteins_filtered)
-olink_unique_max50NA <- setdiff(olink_proteins_filtered, ms_proteins_filtered)
+conc_data_detected_max50NA <- conc_data_detected_max50NA %>% 
+  mutate(All.detected.proteins = TRUE,
+         Detected.one.method.only = Uniprot %in% setdiff(all_proteins_filtered, overlap_filtered))
 
-unique_conc_data_max50NA <- filter(conc_data_detected_max50NA, 
-                           Uniprot %in% ms_unique_max50NA & Platform == 'MS' | 
-                             Uniprot %in% olink_unique_max50NA & Platform == 'Olink')
+unique_conc_data_max50NA <- filter(conc_data_detected_max50NA, Detected.one.method.only)
 
 ```
 

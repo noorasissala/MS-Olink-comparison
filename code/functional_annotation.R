@@ -449,7 +449,7 @@ GO_BP_dotplot
 ggsave(GO_BP_dotplot, 
        filename = 'GO_BP_dotplot.pdf',
        path = path,
-       width = 18.3,
+       width = 18,
        height = 6.5,
        units = 'cm')
 
