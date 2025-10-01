@@ -651,7 +651,7 @@ conc_plot
 ggsave(conc_plot,
        filename = 'NAs_vs_conc_boxplot.pdf',
        path = path,
-       width = 8.7, 
+       width = 8.3, 
        height = 6.5,
        units = 'cm',
        device = 'pdf')
@@ -842,7 +842,7 @@ ggplot.histogram(Blood.conc.ngmL, Fill_var = Platform, breaks = 10^(seq(-3, 8, 0
 
 ggsave(filename = 'HPA_bloodConc_plasmaProteomeCoverage.pdf',
        path = path,
-       width = 8.7,
+       width = 8.3,
        height = 6.5,
        units = 'cm')
 
@@ -858,6 +858,24 @@ Note: proportion of missing values for MS was calculated based on overlapping sa
 ### Detected proteins and MS-Olink overlap
 
 ```{r}
+
+protein_table_max50NA <- protein_table |> 
+  filter(Perc.Missing.MS <= 50 | Perc.Missing.Olink <= 50) |> 
+  mutate(Detected.MS = Perc.Missing.MS <= 50,
+         Detected.MS = ifelse(is.na(Detected.MS), FALSE, Detected.MS),
+         Detected.Olink = Perc.Missing.Olink <= 50,
+         Detected.Olink = ifelse(is.na(Detected.Olink), FALSE, Detected.Olink))
+
+detected_proteins_max50NA <- protein_table_max50NA |> 
+  group_by(UniProt) |> 
+  summarize(Detected.MS = any(Detected.MS),
+            Detected.Olink = any(Detected.Olink),
+            In.HPA = any(In.HPA),
+            In.HPA.Plasma = any(In.HPA.Plasma),
+            In.HPPP = any(In.HPPP),
+            In.Ref.Plasma.Proteome = any(In.Ref.Plasma.Proteome)) |> 
+  dplyr::rename(MS = Detected.MS, Olink = Detected.Olink)
+
 
 ms_proteins_filtered <- missing_MS |> 
   filter(Perc.Missing.MS <= 50) |> 
@@ -877,17 +895,11 @@ Venn diagram of detected proteins with max 50% missing values:
 
 ```{r}
 
-n_ms <- length(setdiff(ms_proteins_filtered, olink_proteins_filtered))
-n_olink <- length(setdiff(olink_proteins_filtered, ms_proteins_filtered))
-
-n_overlap <- length(overlap_filtered)
 
 pdf(file = paste0(path, '/venn_MS_Olink_max50percNA.pdf'),
     width = 4*0.393701, height = 4*0.393701)
   p <- plot(euler(
-    combinations = c('MS' = n_ms, 
-                     'Olink' = n_olink, 
-                     'MS&Olink' = n_overlap)), 
+    combinations = detected_proteins_max50NA[c('MS', 'Olink')]),
     fills = list(fill = TDP_palette[c(1,4)], alpha = 0.5), 
     edges = list(lwd = 2.5, col = TDP_palette[c(1,4)]), 
     quantities = list(fontsize = 7, font = 'regular', fontfamily = 'Helvetica'), 
@@ -916,28 +928,19 @@ Venn diagram of detected proteins with max 50% missing values and the reference 
 
 ```{r}
 
-n_ms <- length(setdiff(ms_proteins_filtered, union(olink_proteins_filtered, plasma_proteome)))
-n_olink <- length(setdiff(olink_proteins_filtered, union(ms_proteins_filtered, plasma_proteome)))
-n_plasma <- length(setdiff(plasma_proteome, union(ms_proteins_filtered, olink_proteins_filtered)))
-
-overlap_all <- intersect(intersect(ms_proteins_filtered, olink_proteins_filtered), plasma_proteome)
-n_overlap_all <- length(overlap_all)
-
-n_ms_olink <- length(setdiff(overlap_filtered, overlap_all))
-n_ms_plasma <- length(setdiff(intersect(ms_proteins_filtered, plasma_proteome), overlap_all))
-n_olink_plasma <- length(setdiff(intersect(olink_proteins_filtered, plasma_proteome), overlap_all))
+all_proteins_max50NA_df <- data.frame(UniProt = plasma_proteome) |> 
+  mutate(Plasma.proteome = TRUE) |> 
+  full_join(detected_proteins_max50NA[c('UniProt', 'MS', 'Olink')], by = 'UniProt') |> 
+  mutate(MS = ifelse(is.na(MS), FALSE, MS),
+         Olink = ifelse(is.na(Olink), FALSE, Olink),
+         Plasma.proteome = ifelse(is.na(Plasma.proteome), FALSE, Plasma.proteome))
 
 pdf(file = paste0(path, '/venn_MS_Olink_plasmaProteome_max50percNA.pdf'),
     width = 4*0.393701, height = 5*0.393701)
 
   p <- plot(euler(
-    combinations = c('MS' = n_ms,
-                     'Olink' = n_olink,
-                     'Plasma proteome' = n_plasma,
-                     'MS&Olink' = n_ms_olink,
-                     'MS&Plasma proteome' = n_ms_plasma,
-                     'Olink&Plasma proteome' = n_olink_plasma,
-                     'MS&Olink&Plasma proteome' = n_overlap_all)),
+    combinations = setNames(all_proteins_max50NA_df[c('MS', 'Olink', 'Plasma.proteome')],
+                            c('MS', 'Olink', 'Plasma proteome'))),
     fills = list(fill = TDP_palette[c(1,4,7)], alpha = 0.5), 
     edges = list(lwd = 2.5, col = TDP_palette[c(1,4,7)]),
     quantities = list(fontsize = 7, font = 'regular', fontfamily = 'Helvetica'), 
@@ -961,14 +964,6 @@ p
 
 
 ### Plasma proteome coverage
-
-```{r}
-
-length(intersect(all_proteins_filtered, plasma_proteome))
-length(intersect(all_proteins_filtered, plasma_proteome))/length(plasma_proteome)*100
-
-
-```
 
 
 ```{r}
@@ -1137,12 +1132,11 @@ Uniquely detected proteins with max 50% missing values:
 
 ```{r}
 
-ms_unique_max50NA <- setdiff(ms_proteins_filtered, olink_proteins_filtered)
-olink_unique_max50NA <- setdiff(olink_proteins_filtered, ms_proteins_filtered)
+conc_data_detected_max50NA <- conc_data_detected_max50NA %>% 
+  mutate(All.detected.proteins = TRUE,
+         Detected.one.method.only = Uniprot %in% setdiff(all_proteins_filtered, overlap_filtered))
 
-unique_conc_data_max50NA <- filter(conc_data_detected_max50NA, 
-                           Uniprot %in% ms_unique_max50NA & Platform == 'MS' | 
-                             Uniprot %in% olink_unique_max50NA & Platform == 'Olink')
+unique_conc_data_max50NA <- filter(conc_data_detected_max50NA, Detected.one.method.only)
 
 ```
 
