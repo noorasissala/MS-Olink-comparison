@@ -5,8 +5,9 @@
 
 In this study, we performed a direct comparison of two plasma proteomics technologies, HiRIEF LC-MS/MS ("MS") and Olink Explore 3072 ("Olink"), across 88 plasma samples and 1,129 proteins analyzed with both methods. We evaluated and compared proteome coverage, technical precision, quantitative agreement at the protein and peptide level, and agreement and statistical power in detecting biological differences in protein abundance between groups, with sex as an example. In addition, we assessed the influence of various technical factors on quantitative agreement and compared the cross-platform correlations to those reported in previous studies. Finally, we developed an R Shiny app for exploring MS-Olink peptide-level correlations along the protein sequence and structure: https://peptaffinity.serve.scilifelab.se/app/peptaffinity. 
 
-The results are published in _:
+The results are published in Communications Chemistry:
 
+Sissala, N., Babačić, H., Leo, I.R. et al. Comparative evaluation of Olink Explore 3072 and mass spectrometry with peptide fractionation for plasma proteomics. Commun Chem 8, 327 (2025). https://doi.org/10.1038/s42004-025-01753-2
 
 ## Content
 
@@ -87,3 +88,5 @@ Due to the large size of the data files, these are not stored in the github repo
 
 If you use this code in your research, please cite the original publication and the code:
 
+Article: Sissala, N., Babačić, H., Leo, I.R. et al. Comparative evaluation of Olink Explore 3072 and mass spectrometry with peptide fractionation for plasma proteomics. Commun Chem 8, 327 (2025). https://doi.org/10.1038/s42004-025-01753-2
+Code: Sissala, N. MS-Olink-comparison. Zenodo https://doi.org/10.5281/zenodo.17246257 (2025).
